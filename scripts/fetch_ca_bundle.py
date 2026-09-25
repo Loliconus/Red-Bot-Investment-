@@ -62,7 +62,9 @@ def _extract_pem_blocks(raw: bytes) -> list[bytes]:
 
 
 def _download(url: str) -> bytes:
-    req = urllib.request.Request(
+    if url not in SOURCES or not url.startswith("https://"):
+        raise ValueError("Источник сертификата отсутствует в HTTPS-списке")
+    req = urllib.request.Request(  # noqa: S310 — проверен HTTPS-allowlist выше
         url,
         headers={
             "User-Agent": "Mozilla/5.0 (fetch_ca_bundle.py; +https://example.invalid)",
@@ -84,7 +86,7 @@ def main() -> int:
         print(f"Скачиваю {url} ...")
         try:
             raw = _download(url)
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             errors.append(f"{url}: download failed: {exc}")
             print(f"  не удалось скачать: {exc}", file=sys.stderr)
             continue
@@ -93,14 +95,17 @@ def main() -> int:
             # Диагностика: это не сертификат, а HTML
             preview = raw.lstrip()[:120].decode("utf-8", errors="replace")
             errors.append(f"{url}: got HTML instead of cert (starts with {preview!r})")
-            print("  пропущено: вместо сертификата пришёл HTML (портал/редирект/заглушка)", file=sys.stderr)
+            print(
+                "  пропущено: вместо сертификата пришёл HTML (портал/редирект/заглушка)",
+                file=sys.stderr,
+            )
             continue
 
         try:
             blocks = _extract_pem_blocks(raw)
             pem_chunks.extend(blocks)
             print(f"  ok: добавлено блоков: {len(blocks)}")
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError) as exc:
             errors.append(f"{url}: parse/convert failed: {exc}")
             print(f"  пропущено: не удалось распарсить/сконвертировать: {exc}", file=sys.stderr)
 
