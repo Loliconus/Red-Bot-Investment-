@@ -10,6 +10,9 @@ authors = [{ name = "Red-Bot project" }]
 dependencies = [
     "t-tech-investments>=1.51",
     "duckdb>=1.1",
+    # DuckDB использует pytz для преобразования TIMESTAMPTZ → datetime,
+    # но не объявляет его своей зависимостью.
+    "pytz>=2024.1",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.9",
