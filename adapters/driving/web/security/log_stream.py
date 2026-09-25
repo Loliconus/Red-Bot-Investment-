@@ -31,10 +31,10 @@ class GuiLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            message = record.getMessage()[:2000]
+            message = record.getMessage()
             for secret in self._secrets:
                 message = message.replace(secret, "[скрыто]")
-            message = SENSITIVE_TEXT.sub(r"\1[скрыто]", message)
+            message = SENSITIVE_TEXT.sub(r"\1[скрыто]", message)[:2000]
             row = {
                 "ts": datetime.now(tz=UTC).isoformat(),
                 "level": record.levelname,

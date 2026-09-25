@@ -82,7 +82,10 @@
     deliver(msg);
   }
   async function onOpen() {
-    const reconnect = connectedBefore; connectedBefore = true; attempts = 0;
+    // sessionStorage переживает навигацию; первый WS на новой странице тоже
+    // должен сверить seq с сервером (он мог полностью перезапуститься).
+    const reconnect = connectedBefore || channels.some(channel => (Number(seq[channel]) || 0) > 0);
+    connectedBefore = true; attempts = 0;
     replaying = reconnect; buffer = [];
     socket.send(JSON.stringify({action:'subscribe', channels}));
     if (reconnect) {
@@ -155,8 +158,14 @@
     const badge = document.querySelector('.topbar .mode-badge');
     if (badge) { badge.className = `mode-badge ${p.mode}`; badge.textContent = `● ${mode}`; }
   });
-  register('system.tasks', ({payload:p}) => {
-    const indicator = document.getElementById('scheduler-indicator'); if (!indicator || !Array.isArray(p)) return;
+  register('system.tasks', ({type,payload:p}) => {
+    const indicator = document.getElementById('scheduler-indicator'); if (!indicator) return;
+    if (type === 'system.paused') {
+      indicator.classList.remove('online'); indicator.classList.add('offline');
+      indicator.querySelector('span').textContent = 'Scheduler PAUSED';
+      return;
+    }
+    if (!Array.isArray(p)) return;
     const active = p.some(task => ['RUNNING','HEALTHY','DEGRADED','WAITING'].includes(task.status));
     const degraded = p.some(task => task.status === 'DEGRADED');
     indicator.classList.toggle('online', active && !degraded);

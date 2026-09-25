@@ -11,6 +11,7 @@ from application.use_cases.update_strategy_config import update_strategy_config
 from core.risk.cost_model import estimate_costs, min_viable_target_pct
 
 ACCOUNT_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{4,64}$")
+COUNTERTREND_PHRASE = "РАЗРЕШИТЬ КОНТРТРЕНД"
 
 
 def mask_account(value: str) -> str:

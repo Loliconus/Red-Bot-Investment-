@@ -34,7 +34,8 @@ attribution are under `static/vendor/` and on `/chart/{uid}`.
   restart and cannot be released via GUI (unlike soft pause). Restore requires
   a stopped scheduler, an exact typed confirmation and validated checksums;
   the GUI must then be restarted before trading. Broker API tokens are write-only
-  in the GUI and the storage system must provide a usable keyring.
+  in the GUI and the storage system must provide a usable keyring. Enabling
+  counter-trend trading requires an explicit typed confirmation.
 - P1 `/`, `/chart/{uid}`: decisions are fetched from the repository and replayed
   after WS reconnect. Resource levels distinguish unavailable from zero.
   Benchmark series, Fibonacci and live chart updates reflect available inputs.
@@ -45,7 +46,7 @@ attribution are under `static/vendor/` and on `/chart/{uid}`.
   use cases are implemented.
 - P2 `/backtest`: launch fails closed with HTTP 501. Equity/trades are not
   fabricated from live account data. An isolated runner, walk-forward results,
-  progress events and browser E2E tests are **not complete** and are required
+  progress events and a working runner are **not complete** and are required
   before declaring the approved v1.0 done.
 
 ## Tests and build limitations
@@ -57,6 +58,10 @@ TLS from the development sandbox, so `uv.lock` has **not** been regenerated
 for the newly declared GUI dependencies yet. Run `uv lock` with access to the
 configured registry before merging; `uv sync --locked` will fail until then.
 
-The pre-existing Python tests exercise the HTTP API; GUI contract and browser
-E2E coverage still need to be expanded. Never use GUI controls to bypass a
-risk-triggered kill switch or to display stored secrets.
+The Python integration tests exercise cookie/CSRF, append-only audit, Hard Stop,
+WS sequence replay/gap, session-scoped SQL exports and real DuckDB backup/restore.
+Browser E2E tests in `tests/e2e` exercise login, HTMX, WS and Hard Stop in a
+real Chromium; run `playwright install chromium && pytest -m e2e`. They skip
+if no browser is installed (Playwright's CDN was not reachable from this
+sandbox), so browser verification remains an outstanding merge check. Never
+use GUI controls to bypass a risk-triggered kill switch or show stored secrets.

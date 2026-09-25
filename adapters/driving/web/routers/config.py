@@ -18,6 +18,7 @@ from adapters.driving.web.schemas import (
     StrategyConfigResponse,
     StrategyConfigUpdate,
 )
+from application.use_cases.manage_risk import COUNTERTREND_PHRASE
 
 router = APIRouter(
     prefix="/api/config",
@@ -52,10 +53,16 @@ async def update_config(
     """Обновляет конфиг. Непереданные поля (``None``) не меняются."""
     from application.use_cases.update_strategy_config import update_strategy_config
 
+    if (
+        payload.allow_counter_trend
+        and not context.config.allow_counter_trend
+        and (payload.counter_trend_confirmation != COUNTERTREND_PHRASE)
+    ):
+        raise HTTPException(status_code=409, detail=f"Введите точно {COUNTERTREND_PHRASE}")
     try:
         updated = await update_strategy_config(
             context,
-            **payload.model_dump(exclude_none=True),
+            **payload.model_dump(exclude_none=True, exclude={"counter_trend_confirmation"}),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

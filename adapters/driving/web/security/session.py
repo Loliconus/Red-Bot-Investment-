@@ -26,6 +26,7 @@ COOKIE_NAME = "redbot_session"
 class SessionData:
     expires_at: datetime
     account_draft: str | None = None
+    account_step_started_at: datetime | None = None
     draft_expires_at: datetime | None = None
     actions: list[dict[str, str]] = field(default_factory=list)
     sql_history: list[str] = field(default_factory=list)
@@ -87,11 +88,24 @@ class SessionManager:
             candidate and self.verify(token) and hmac.compare_digest(self.csrf(token), candidate)
         )
 
-    def draft_account(self, token: str, value: str) -> None:
+    def begin_account_change(self, token: str) -> None:
         session = self.get(token)
         if session is None:
             raise ValueError("Сессия истекла")
+        session.account_draft = None
+        session.draft_expires_at = None
+        session.account_step_started_at = datetime.now(tz=UTC)
+
+    def draft_account(self, token: str, value: str) -> None:
+        session = self.get(token)
+        if (
+            session is None
+            or session.account_step_started_at is None
+            or (datetime.now(tz=UTC) - session.account_step_started_at >= DRAFT_TTL)
+        ):
+            raise ValueError("Сначала начните процедуру смены счёта с шага 1")
         session.account_draft = value
+        session.account_step_started_at = None
         session.draft_expires_at = datetime.now(tz=UTC) + DRAFT_TTL
 
     def take_account_draft(self, token: str) -> str:

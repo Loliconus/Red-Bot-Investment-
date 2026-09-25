@@ -157,5 +157,6 @@ addopts = "-q --strict-markers"
 markers = [
     "sandbox: сетевые тесты против контура песочницы T-Invest (не запускаются по умолчанию)",
     "contract: контрактные тесты, гоняемые против всех реализаций порта",
+    "e2e: браузерные тесты с Playwright Chromium (если установлен)",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]

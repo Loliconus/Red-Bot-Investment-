@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -44,10 +45,8 @@ class ResilientLoop:
                     await self._run_once()
                 if stop_event.is_set():
                     break
-                try:
+                with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(self.wakeup.wait(), timeout=self.interval_seconds)
-                except TimeoutError:
-                    pass
                 if self.wakeup.is_set():
                     self.wakeup.clear()
         finally:

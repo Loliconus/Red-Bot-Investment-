@@ -129,6 +129,7 @@ class StrategyConfigUpdate(BaseModel):
     confluence_threshold: Decimal | None = Field(default=None, ge=-1, le=1)
     confluence_weights: dict[str, Decimal] | None = None
     allow_counter_trend: bool | None = None
+    counter_trend_confirmation: str | None = Field(default=None, max_length=64)
     daily_loss_limit_pct: Decimal | None = Field(default=None, gt=0, le=Decimal("0.5"))
 
 

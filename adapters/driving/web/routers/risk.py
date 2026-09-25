@@ -14,6 +14,7 @@ from adapters.driving.web.dependencies import ContextDep, SessionDep, require_se
 from adapters.driving.web.render import render_page, render_partial
 from adapters.driving.web.security.session import get_session_manager
 from application.use_cases.manage_risk import (
+    COUNTERTREND_PHRASE,
     change_managed_account,
     get_risk_state,
     mask_account,
@@ -32,6 +33,7 @@ class RiskUpdate(BaseModel):
     allow_counter_trend: bool | None = None
     max_holding_hours: int | None = Field(default=None, ge=1, le=720)
     confirmed_warning: bool = False
+    confirmation: str = ""
 
 
 class RiskResponse(BaseModel):
@@ -66,9 +68,12 @@ async def _update(context: Any, payload: RiskUpdate) -> RiskResponse:
     if (
         payload.allow_counter_trend
         and not context.config.allow_counter_trend
-        and not payload.confirmed_warning
+        and (not payload.confirmed_warning or payload.confirmation != COUNTERTREND_PHRASE)
     ):
-        raise HTTPException(status_code=400, detail="Подтвердите риск контр-трендовой торговли")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Для включения контр-тренда введите точно {COUNTERTREND_PHRASE}",
+        )
     state = await update_risk(
         context,
         multiplier=payload.multiplier,
@@ -99,6 +104,7 @@ async def settings_form(
     max_holding_hours: int = Form(...),
     allow_counter_trend: str = Form(default="false"),
     confirmed_warning: str = Form(default="false"),
+    confirmation: str = Form(default=""),
 ) -> Any:
     try:
         payload = RiskUpdate.model_validate(
@@ -108,6 +114,7 @@ async def settings_form(
                 "max_holding_hours": max_holding_hours,
                 "allow_counter_trend": allow_counter_trend == "true",
                 "confirmed_warning": confirmed_warning == "true",
+                "confirmation": confirmation,
             }
         )
         await _update(context, payload)
@@ -148,6 +155,7 @@ async def reveal_account(
 
 @router.post("/risk/account/step/1")
 async def account_step1(request: Request, context: ContextDep, _session: SessionDep) -> Any:
+    get_session_manager(request).begin_account_change(_session)
     request.state.audit_after = {"account_step": "1 просмотр текущего"}
     return render_partial(
         request,
