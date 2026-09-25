@@ -51,12 +51,14 @@ attribution are under `static/vendor/` and on `/chart/{uid}`.
 
 ## Tests and build limitations
 
-`pytest`, `ruff check` and `mypy` pass locally on Python 3.11 for the applicable
-sources; the project requires Python 3.14 for production. The Python 3.14
-standalone tarball and private T-Invest SDK registry could not be reached over
-TLS from the development sandbox, so `uv.lock` has **not** been regenerated
-for the newly declared GUI dependencies yet. Run `uv lock` with access to the
-configured registry before merging; `uv sync --locked` will fail until then.
+`pytest`, repository-wide `ruff check`/`ruff format --check` and strict `mypy`
+pass locally on Python 3.11. GitHub CI also passes on Python 3.13 and 3.14
+using separately installed public dependencies (T-Invest imports are lazy).
+The project requires Python 3.14 for production. The Python 3.14 standalone
+tarball and private T-Invest SDK registry could not be reached over TLS from
+the development sandbox, so `uv.lock` has **not** been regenerated for the
+newly declared GUI dependencies yet. Run `uv lock` with registry access before
+merging; `uv sync --locked` will fail until then.
 
 The Python integration tests exercise cookie/CSRF, append-only audit, Hard Stop,
 WS sequence replay/gap, session-scoped SQL exports and real DuckDB backup/restore.
