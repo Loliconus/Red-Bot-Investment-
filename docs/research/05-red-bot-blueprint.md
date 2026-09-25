@@ -91,8 +91,8 @@ from uuid import UUID
 
 class Mode(StrEnum):
     BACKTEST = "backtest"
-    PAPER = "paper"        # sandbox
-    LIVE = "live"          # production
+    PAPER = "paper"  # sandbox
+    LIVE = "live"  # production
 
 
 class Side(StrEnum):
@@ -119,7 +119,7 @@ class OrderIntent:
     instrument: Instrument
     side: Side
     stop_price: Decimal
-    signal_strength: float      # не используется как размер позиции!
+    signal_strength: float  # не используется как размер позиции!
     reason: str
     created_at: datetime
 
@@ -162,7 +162,7 @@ class Settings(BaseSettings):
     max_lots_per_order: int = 10
     max_position_lots: int = 50
     max_daily_loss_pct: Decimal = Decimal("0.03")
-    max_orders_per_minute: int = 15       # лимит postOrder — 15/сек, но держим запас
+    max_orders_per_minute: int = 15  # лимит postOrder — 15/сек, но держим запас
     max_notional_per_order: Decimal = Decimal("1_000_000")
 
     # торговля
@@ -231,14 +231,14 @@ def check(intent, ctx) -> Decision:
 
 ```python
 async def execute(decision, executor, store) -> None:
-    client_key = store.create_client_key(decision)      # uuid7, ПИШЕМ ДО СЕТИ
+    client_key = store.create_client_key(decision)  # uuid7, ПИШЕМ ДО СЕТИ
     request = executor.build_request(decision, client_key)
     try:
         response = await executor.send(request)
-    except (TimeoutError, ConnectionError):
+    except TimeoutError, ConnectionError:
         # НЕ создаём новый ключ, НЕ повторяем
         await store.mark_unknown(client_key)
-        await executor.reconcile(client_key)            # getOrderState по ключу
+        await executor.reconcile(client_key)  # getOrderState по ключу
         return
     await store.bind(client_key, response.order_id, response.order_request_id)
 ```

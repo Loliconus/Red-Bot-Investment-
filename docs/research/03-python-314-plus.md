@@ -57,10 +57,10 @@ from string.templatelib import Interpolation, Template
 
 name = "World"
 tpl = t"Hello {name}!"
-tpl.strings            # ("Hello ", "!")
-tpl.interpolations     # (Interpolation("World", "name", None, ""),)
-tpl.values             # ("World",)
-list(tpl)              # ["Hello ", Interpolation(...), "!"]
+tpl.strings  # ("Hello ", "!")
+tpl.interpolations  # (Interpolation("World", "name", None, ""),)
+tpl.values  # ("World",)
+list(tpl)  # ["Hello ", Interpolation(...), "!"]
 ```
 
 `Interpolation` хранит `value`, `expression` (исходный текст выражения),
@@ -98,11 +98,7 @@ list(tpl)              # ["Hello ", Interpolation(...), "!"]
 
        @property
        def values(self) -> dict[str, object]:
-           return {
-               i.expression: i.value
-               for i in self.tpl
-               if isinstance(i, Interpolation)
-           }
+           return {i.expression: i.value for i in self.tpl if isinstance(i, Interpolation)}
    ```
 
 ### PEP 734: сабинтерпретаторы в stdlib
@@ -125,7 +121,7 @@ interp.exec("print('hello from another interpreter')")
 ```python
 try:
     ...
-except ValueError | KeyError as exc:   # было: except (ValueError, KeyError) as exc
+except ValueError | KeyError as exc:  # было: except (ValueError, KeyError) as exc
     ...
 ```
 
@@ -217,7 +213,7 @@ python -m asyncio pstree    # дерево корутин
 
 ```python
 # PEP 810 — только на уровне модуля; внутри функций/классов/try — SyntaxError
-lazy import pandas as pd          # pandas загрузится при первом обращении к pd
+lazy import pandas as pd  # pandas загрузится при первом обращении к pd
 
 # PEP 814
 RULES: frozendict[str, int] = frozendict({"max_orders_per_min": 15})
@@ -233,8 +229,9 @@ def get(key: str, default: object = MISSING) -> object:
         raise KeyError(key)
     return default
 
+
 # PEP 798
-flattened = [x for row in rows for x in (*row,)]     # распаковка внутри comprehension
+flattened = [x for row in rows for x in (*row,)]  # распаковка внутри comprehension
 ```
 
 Глобальное управление lazy-импортами: `-X lazy_imports=all|normal`,
@@ -309,7 +306,7 @@ namespace-пакетами.
 - **`type` alias** вместо `X = ...`:
 
   ```python
-  type InstrumentKey = tuple[str, str]      # (instrument_uid, class_code)
+  type InstrumentKey = tuple[str, str]  # (instrument_uid, class_code)
   type Handler[T] = Callable[[T], None]
   ```
 

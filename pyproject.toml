@@ -1,0 +1,120 @@
+[project]
+name = "red-bot"
+version = "0.1.0"
+description = "Red-Bot — алгоритмическая система торговли (свинг/интрадей, long-only) на базе T-Bank Invest API"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [{ name = "Red-Bot project" }]
+
+dependencies = [
+    "t-tech-investments>=1.51",
+    "duckdb>=1.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "structlog>=24",
+    "keyring>=25",
+    "typer>=0.12",
+    "grpcio>=1.68",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.14,<0.15",  # 0.15/0.16 ломают `except (A, B):` при форматировании
+    "mypy>=1.13",
+    "pre-commit>=4",
+]
+
+[project.scripts]
+red-bot = "main:app_cli"
+
+[[tool.uv.index]]
+name = "tbank"
+url = "https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple"
+explicit = true
+
+[tool.uv.sources]
+t-tech-investments = { index = "tbank" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["config", "core", "application", "adapters"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "N",             # pep8-naming
+    "UP",            # pyupgrade
+    "B",             # flake8-bugbear
+    "BLE",           # blind except
+    "C4",            # flake8-comprehensions
+    "SIM",           # flake8-simplify
+    "ASYNC",         # async-correctness
+    "RUF",           # ruff-specific
+    "S",             # bandit (секреты, shell, eval)
+    "SLF",           # обращение к приватным атрибутам
+]
+ignore = [
+    "E501",     # длина строки — забота форматтера
+    "B008",     # вызов в аргументах по умолчанию (используется в FastAPI Depends)
+    "RUF002",   # кириллица в докстрингах — проект русскоязычный
+    "RUF003",   # типографские символы (×, —) в комментариях — осознанный стиль
+    "RUF001",   # типографские символы в строках — осознанный стиль
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "SLF001"]  # assert, захардкоженные значения, доступ к приватным полям фейков
+"config/settings.py" = ["S105", "S106"]  # дефолтные заглушки секретов, не настоящие пароли
+"config/secrets_source.py" = ["S105", "S106"]
+# Имена таблиц и путей в SQL берутся из фиксированных белых списков (schema.TABLES,
+# ARCHIVABLE_TABLES) и из настроек, а не из пользовательского ввода.
+"adapters/driven/storage/*.py" = ["S608"]
+"adapters/driven/backtest/replay_adapter.py" = ["S608"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["config", "core", "application", "adapters", "main.py"]
+explicit_package_bases = true
+mypy_path = "."
+# warn_unreachable отключён: в домене есть рантайм-гарды вида
+# `if not isinstance(x, Decimal)` — для mypy они недостижимы, но на практике
+# ловят float, переданный позиционно.
+warn_unreachable = false
+show_error_codes = true
+# Тесты типизируются «как получится»: фикстуры намеренно свободны по типам.
+exclude = ["build", "dist", ".venv", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["t_tech.*", "duckdb", "keyring", "typer", "uvicorn.*", "grpc", "grpc.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "sandbox: сетевые тесты против контура песочницы T-Invest (не запускаются по умолчанию)",
+    "contract: контрактные тесты, гоняемые против всех реализаций порта",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

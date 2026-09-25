@@ -48,6 +48,8 @@ data/
 var/
 logs/
 *.db
+*.duckdb
+*.duckdb.wal
 *.sqlite3
 *.parquet
 *.zst

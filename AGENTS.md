@@ -33,7 +33,10 @@
   from t_tech.invest.grpc import AsyncClient, AsyncSandboxClient, Client, SandboxClient
   from t_tech.invest.grpc.schemas import GetAccountsRequest, PostOrderRequest
   from t_tech.invest.utils import (
-      decimal_to_money, decimal_to_quotation, money_to_decimal, quotation_to_decimal,
+      decimal_to_money,
+      decimal_to_quotation,
+      money_to_decimal,
+      quotation_to_decimal,
   )
   ```
 
@@ -153,11 +156,59 @@ Pre-trade проверки (детерминированные, перед лю�
 - Исключения: явные доменные классы, в `except` не «глотать» ошибки молча;
   `return/break/continue`, покидающие `finally`, недопустимы (SyntaxWarning с 3.14).
 
-## 10. Критерии завершения задачи
+## 10. Реализация: дополнительные правила
+
+Разделы 1–9 остаются в силе; ниже — правила, возникшие с появлением кода.
+
+### Слои и зависимости
+
+```
+adapters/driving (GUI, CLI) → application (юзкейсы) → core (домен)
+                              adapters/driven (tbank, sandbox, backtest, storage) → core
+config → application → core
+```
+
+- `core/` **не импортирует** ничего внешнего: ни SDK, ни DuckDB, ни FastAPI.
+- Порты — `typing.Protocol` с `@runtime_checkable`, их ровно шесть:
+  `MarketData`, `OrderExecution`, `Repository`, `Archive`, `Clock`,
+  `Notification`. Адаптер реализует порт структурно, без наследования.
+- `application/` не знает, какой адаптер подключён: выбор делает
+  `composition.py` по контуру (`BACKTEST` / `SANDBOX` / `LIVE`).
+
+### Тесты
+
+- Юнит-тест ядра не имеет права трогать сеть, диск и внешние библиотеки —
+  для этого есть фейки в `tests/fakes.py`.
+- Порт с несколькими реализациями обязан иметь **контрактный тест**: один
+  набор проверок гоняется по всем реализациям, включая фейк.
+- Изменение конфига стратегии в тестах — только через `StrategyConfig`
+  из БД; правка исходников под «подбор параметров» не считается настройкой.
+
+### Опасные места (не ломать)
+
+- `is_select_only` — единственный барьер перед произвольным SQL в GUI.
+- Ключ идемпотентности: `build_client_order_id()` вызывается **до** сетевого
+  вызова; мутация без ключа не повторяется (`adapters/driven/tbank/retry.py`).
+- `_assert_managed_account` — блокировка торговли чужим счётом.
+- `monitor_positions.decide_exit` — порядок проверок: hard stop → инвалидация →
+  TTL → тейк. Менять порядок нельзя.
+- `min_viable_target_multiplier` — фильтр сделок, не окупающих издержки.
+
+### Инструменты
+
+- `ruff` закреплён как `>=0.14,<0.15`: в 0.15/0.16 форматтер ломает
+  `except (A, B):`, превращая его в синтаксически некорректный код.
+  После `ruff format` имеет смысл прогнать `python -m compileall`.
+- `mypy` проверяет только исходники (`tests/` в `exclude`): фикстуры
+  намеренно свободны по типам.
+
+## 11. Критерии завершения задачи
 
 - импорты и сигнатуры существуют в текущей версии SDK;
 - тесты не обращаются к реальному контуру;
 - токены и персональные данные не попали в diff;
 - для финансовых значений не добавлен `float`;
 - документация различает prod, sandbox и локальные тесты;
+- `ruff check`, `ruff format --check`, `mypy` и `pytest -m "not sandbox"`
+  проходят;
 - выполненные проверки и ограничения окружения перечислены в отчёте.
