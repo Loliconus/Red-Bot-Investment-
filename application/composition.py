@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -21,6 +22,7 @@ import structlog
 
 from application.events import EventBus
 from application.kill_switch import KillSwitch
+from application.scheduler import Scheduler
 from config.enums import ExecutionMode
 from config.settings import Settings
 from core.domain.entities import Instrument, PortfolioState, StrategyConfig
@@ -59,11 +61,34 @@ class AppContext:
     config_params: dict[str, dict[str, Any]] = field(default_factory=dict)
     regime_cache: dict[str, MarketRegime] = field(default_factory=dict)
     started_at: datetime | None = None
+    mode: ExecutionMode | None = None
+    scheduler: Scheduler | None = None
+    scheduler_task: asyncio.Task[None] | None = None
+    managed_account_id: str | None = None
+    instrument_enabled: dict[str, bool] = field(default_factory=dict)
+    last_restart_at: datetime | None = None
+    last_restart_reason: str | None = None
+    restart_required: bool = False
+    hard_stop_latched: bool = False
+    broker_latency_ms: int | None = None
+    storage_memory_limit_mb: int | None = None
+
+    @property
+    def execution_mode(self) -> ExecutionMode:
+        return self.mode or self.settings.execution_mode
+
+    @property
+    def active_account_id(self) -> str:
+        return self.managed_account_id or self.settings.tbank.account_id
 
     @property
     def tradable_instruments(self) -> list[Instrument]:
-        """Бумаги, которыми можно торговать. IMOEX сюда не входит."""
-        return [i for i in self.instruments if not i.is_benchmark]
+        """Бумаги, которыми можно торговать. IMOEX и soft-off исключены."""
+        return [
+            i
+            for i in self.instruments
+            if not i.is_benchmark and self.instrument_enabled.get(i.uid, True)
+        ]
 
     def preview_size(
         self, entry_price: Decimal, stop_price: Decimal, instrument: Instrument
@@ -113,6 +138,8 @@ def build_storage(settings: Settings) -> tuple[RepositoryPort, ArchivePort]:
 
 async def build_tbank_adapters(
     settings: Settings,
+    *,
+    managed_account_id: str | None = None,
 ) -> tuple[MarketDataPort, OrderExecutionPort]:
     """Создаёт адаптеры T-Invest. Импорт SDK — ленивый, только здесь."""
     from adapters.driven.tbank.broker_adapter import TBankBrokerAdapter
@@ -121,7 +148,9 @@ async def build_tbank_adapters(
 
     channel = await create_channel(settings)
     market_data: MarketDataPort = TBankMarketDataAdapter(channel)
-    broker: OrderExecutionPort = TBankBrokerAdapter(channel, account_id=settings.tbank.account_id)
+    broker: OrderExecutionPort = TBankBrokerAdapter(
+        channel, account_id=managed_account_id or settings.tbank.account_id
+    )
     return market_data, broker
 
 
@@ -153,11 +182,22 @@ async def build_context(
     event_bus = EventBus()
 
     repository, archive = build_storage(settings)
+    # Заявленная через GUI смена счёта вступает в силу только после рестарта.
+    account_override = await repository.get_operational_value("managed_account_id")
+    active_account_id = account_override or settings.tbank.account_id
+    memory_override = await repository.get_operational_value("duckdb_memory_limit_mb")
+    active_memory_mb = (
+        int(memory_override) if memory_override else settings.storage.duckdb_memory_limit_mb
+    )
+    if memory_override:
+        await repository.set_memory_limit_mb(active_memory_mb)
 
     if mode is ExecutionMode.BACKTEST:
         market_data, broker = build_backtest_adapters(settings)
     else:
-        market_data, broker = await build_tbank_adapters(settings)
+        market_data, broker = await build_tbank_adapters(
+            settings, managed_account_id=active_account_id
+        )
 
     kill_switch = KillSwitch(
         clock=clock,
@@ -187,6 +227,14 @@ async def build_context(
         benchmark=benchmark,
         kill_switch=kill_switch,
         started_at=clock.now(),
+        mode=mode,
+        managed_account_id=active_account_id,
+        storage_memory_limit_mb=active_memory_mb,
+        instrument_enabled={
+            i.uid: (await repository.get_operational_value(f"instrument:{i.uid}:enabled"))
+            != "false"
+            for i in stored_instruments
+        },
     )
 
     logger.info(

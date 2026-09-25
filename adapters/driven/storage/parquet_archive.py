@@ -19,6 +19,7 @@ from typing import Any
 import structlog
 
 from adapters.driven.storage.connection_pool import DuckDBConnectionPool
+from adapters.driven.storage.schema import TABLES
 
 logger = structlog.get_logger(__name__)
 
@@ -30,6 +31,10 @@ ARCHIVABLE_TABLES: tuple[str, ...] = (
 )
 
 #: Имя колонки времени у каждой таблицы: оно различается, и это легко забыть.
+# Журнал аудита — append-only и не заменяется старой копией; оперативный
+# managed_account_id также не должен тихо меняться при restore.
+BACKUP_TABLES = tuple(t for t in TABLES if t not in {"gui_audit", "operational_settings"})
+
 TIME_COLUMN: dict[str, str] = {
     "market_snapshots": "captured_at",
     "decision_snapshots": "created_at",
@@ -159,8 +164,7 @@ class ParquetArchive:
         destination.mkdir(parents=True, exist_ok=True)
         target = destination / "redbot_backup.parquet"
 
-        tables = ("instruments", "trade_plans", "trades", "hypotheses", "strategy_configs")
-        return await asyncio.to_thread(self._export_sync, target, tables)
+        return await asyncio.to_thread(self._export_sync, target, BACKUP_TABLES)
 
     def _export_sync(self, target: Path, tables: tuple[str, ...]) -> Path:
         for table in tables:
@@ -177,11 +181,14 @@ class ParquetArchive:
         return await asyncio.to_thread(self._restore_sync, source)
 
     def _restore_sync(self, source: Path) -> None:
-        for part in sorted(source.glob("redbot_backup_*.parquet")):
-            table = part.stem.replace("redbot_backup_", "")
-            self._pool.execute(
-                f"INSERT OR REPLACE INTO {table} SELECT * FROM read_parquet('{part.as_posix()}')"
-            )
+        paths = {table: source / f"redbot_backup_{table}.parquet" for table in BACKUP_TABLES}
+        if any(not path.is_file() or path.is_symlink() for path in paths.values()):
+            raise ValueError("Неполная или небезопасная резервная копия")
+        # Валидация файлов ДО транзакции; удаляем/возвращаем все таблицы атомарно.
+        for path in paths.values():
+            escaped = path.as_posix().replace("'", "''")
+            self._pool.execute(f"SELECT count(*) FROM read_parquet('{escaped}')")
+        self._pool.restore_tables(paths)
 
     async def read_cold(self, pattern: str = "*.parquet") -> list[tuple[Any, ...]]:
         """Чтение холодных данных напрямую, без загрузки в горячий слой."""

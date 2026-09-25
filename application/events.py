@@ -12,11 +12,19 @@ import asyncio
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
+
+from core.ports.persistence import DecisionRecord
 
 Handler = Callable[[Any], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRecorded:
+    record: DecisionRecord
 
 
 class EventBus:

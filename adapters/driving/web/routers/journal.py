@@ -6,13 +6,14 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 
 from adapters.driving.web.dependencies import (
     ContextDep,
     SessionDep,
     require_session,
 )
+from adapters.driving.web.render import render_page, render_partial
 from adapters.driving.web.schemas import (
     DecisionResponse,
     HypothesisApplyRequest,
@@ -20,6 +21,83 @@ from adapters.driving.web.schemas import (
     OkResponse,
     TradeReviewResponse,
 )
+from application.use_cases.approve_hypothesis import CONFIRM_PHRASE, approve_hypothesis
+from application.use_cases.gui_views import journal_view
+
+page_router = APIRouter(tags=["journal-page"], dependencies=[Depends(require_session)])
+
+
+@page_router.get("/journal")
+async def journal_page(
+    request: Request,
+    context: ContextDep,
+    days: int = 180,
+    instrument_uid: str | None = None,
+) -> Any:
+    return render_page(
+        request,
+        "pages/journal.html",
+        title="Журнал и самоанализ",
+        section="journal",
+        data={
+            "journal": await journal_view(
+                context, days=min(max(days, 1), 3650), instrument_uid=instrument_uid
+            ),
+            "days": days,
+            "instrument_uid": instrument_uid or "",
+        },
+    )
+
+
+@page_router.get("/journal/hypotheses/{hypothesis_id}/review")
+async def review_hypothesis(request: Request, context: ContextDep, hypothesis_id: UUID) -> Any:
+    entries = await context.repository.list_hypotheses()
+    target = next((h for h in entries if h.id == hypothesis_id), None)
+    if target is None or target.status.value != "confirmed":
+        raise HTTPException(status_code=404, detail="Гипотеза не подтверждена")
+    return render_partial(
+        request,
+        "partials/hypothesis_confirm.html",
+        {
+            "hypothesis": target,
+            "config_version": context.config.version,
+            "confirm_phrase": CONFIRM_PHRASE,
+        },
+    )
+
+
+@page_router.post("/journal/hypotheses/{hypothesis_id}/approve")
+async def approve_form(
+    request: Request,
+    context: ContextDep,
+    _session: SessionDep,
+    hypothesis_id: UUID,
+    confirmation: str = Form(default=""),
+) -> Any:
+    try:
+        status = await approve_hypothesis(context, hypothesis_id, confirmation)
+    except (LookupError, ValueError) as exc:
+        return render_partial(
+            request,
+            "partials/hypothesis_confirm.html",
+            {"error": str(exc), "hypothesis": None, "confirm_phrase": CONFIRM_PHRASE},
+            status_code=409,
+        )
+    request.state.audit_after = {"hypothesis_id": str(hypothesis_id), "status": status}
+    await request.app.state.hub.publish(
+        "journal.hypotheses",
+        "hypothesis.updated",
+        {
+            "id": str(hypothesis_id),
+            "status": status,
+        },
+    )
+    return render_partial(
+        request,
+        "partials/hypothesis_confirm.html",
+        {"message": "Одобрено. Числовые параметры стратегии не менялись автоматически."},
+    )
+
 
 router = APIRouter(
     prefix="/api/journal",
@@ -111,19 +189,13 @@ async def apply_hypothesis(
             detail="Автоприменение запрещено: выставьте confirmed_by_user=true",
         )
 
-    items = await context.repository.list_hypotheses()
-    target = next((h for h in items if h.id == payload.hypothesis_id), None)
-    if target is None:
-        raise HTTPException(status_code=404, detail="Гипотеза не найдена")
-    if target.is_overfitted:
-        raise HTTPException(
-            status_code=409,
-            detail="Гипотеза признана переобученной: walk-forward ниже порога",
-        )
-
-    target.mark_applied()
-    await context.repository.save_hypothesis(target)
-    return OkResponse(ok=True, detail=f"Гипотеза {target.id} помечена применённой")
+    try:
+        await approve_hypothesis(context, payload.hypothesis_id, payload.confirmation)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return OkResponse(ok=True, detail=f"Гипотеза {payload.hypothesis_id} одобрена")
 
 
 @router.get("/market-snapshots/{snapshot_id}")

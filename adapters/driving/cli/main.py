@@ -116,7 +116,7 @@ async def _run(mode: str, host: str | None, port: int | None, *, with_gui: bool)
     settings.web.port = port or settings.web.port
 
     scheduler = _build_scheduler(context)
-    server: Any = None
+    context.scheduler = scheduler
 
     try:
         if with_gui:
@@ -128,11 +128,14 @@ async def _run(mode: str, host: str | None, port: int | None, *, with_gui: bool)
                 log_level=settings.log_level.value,
             )
             server = uvicorn.Server(config)
-            await asyncio.gather(server.serve(), scheduler.run())
+            context.scheduler_task = asyncio.create_task(scheduler.run(), name="bot-scheduler")
+            await server.serve()
         else:
             await scheduler.run()
     finally:
         scheduler.stop()
+        if context.scheduler_task is not None:
+            await context.scheduler_task
         await context.aclose()
 
 
@@ -150,7 +153,7 @@ def _build_scheduler(context: Any) -> Any:
 
     scheduler = Scheduler()
     scheduler.add(TaskSpec(name="decisions", cycle=decision_cycle, interval_seconds=300))
-    scheduler.add(TaskSpec(name="monitor", cycle=monitor_cycle, interval_seconds=60))
+    scheduler.add(TaskSpec(name="position_monitor", cycle=monitor_cycle, interval_seconds=60))
     return scheduler
 
 

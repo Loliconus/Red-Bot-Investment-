@@ -26,12 +26,14 @@ from uuid import UUID
 
 import structlog
 
+from application.events import DecisionRecorded
 from core.analysis.orderbook_analysis import OrderbookIndicator
 from core.analysis.registry import build_default_registry
 from core.domain.entities import Instrument, ReasoningStep, StrategyConfig, TradePlan
 from core.domain.enums import DecisionType, Timeframe
 from core.domain.value_objects import CandleSeries
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
+from core.ports.persistence import DecisionRecord
 from core.risk.cost_model import CostFilterResult, estimate_costs
 from core.risk.position_sizing import SizingResult, calculate_position_size
 from core.risk.thesis_invalidation import build_default_rules
@@ -314,6 +316,7 @@ async def make_decision(
     await ctx.repository.save_market_snapshot(snapshot)
     await ctx.repository.save_decision_snapshot(decision_snapshot)
     await ctx.repository.save_trade_plan(plan)
+    await ctx.event_bus.publish(DecisionRecorded(DecisionRecord(instrument.uid, decision_snapshot)))
 
     logger.info(
         "decision_enter",
@@ -393,6 +396,9 @@ async def _hold(
     )
     await ctx.repository.save_market_snapshot(snapshot)
     await ctx.repository.save_decision_snapshot(decision_snapshot)
+    await ctx.event_bus.publish(
+        DecisionRecorded(DecisionRecord(snapshot.instrument_uid, decision_snapshot))
+    )
     logger.info("decision_hold", uid=snapshot.instrument_uid, reason=reason)
     return DecisionOutcome(
         decision=DecisionType.HOLD,
@@ -436,6 +442,9 @@ async def _reject(
     )
     await ctx.repository.save_market_snapshot(snapshot)
     await ctx.repository.save_decision_snapshot(decision_snapshot)
+    await ctx.event_bus.publish(
+        DecisionRecorded(DecisionRecord(snapshot.instrument_uid, decision_snapshot))
+    )
     logger.info("decision_reject", uid=snapshot.instrument_uid, reason=reason)
     return DecisionOutcome(
         decision=DecisionType.REJECT,

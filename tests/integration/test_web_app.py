@@ -248,16 +248,45 @@ async def test_hypotheses_apply_with_confirmation(client: Any, context: AppConte
     token = _login(client)
     response = client.post(
         "/api/journal/hypotheses/apply",
-        json={"hypothesis_id": str(hypothesis.id), "confirmed_by_user": True},
+        json={
+            "hypothesis_id": str(hypothesis.id),
+            "confirmed_by_user": True,
+            "confirmation": "ОДОБРИТЬ ГИПОТЕЗУ",
+        },
         headers={"X-Red-Bot-Token": token},
     )
     assert response.status_code == 200, response.text
 
 
 async def test_websocket_endpoint_accepts_connection(client: Any) -> None:
+    _login(client)
     with client.websocket_connect("/ws") as websocket:
-        websocket.send_text("ping")
-        assert websocket.receive_json()["event"] == "ack"
+        websocket.send_json({"action": "subscribe", "channels": ["system.mode"]})
+        response = websocket.receive_json()
+        assert response["channel"] == "system.mode"
+        assert response["type"] == "snapshot"
+
+
+async def test_gui_pages_render(client: Any, context: AppContext) -> None:
+    assert client.get("/control", follow_redirects=False).status_code == 303
+    _login(client)
+    await context.repository.save_instrument(seed_instrument("uid-sber", "SBER", 10))
+    context.instruments = await context.repository.list_instruments()
+    for path in (
+        "/control",
+        "/risk",
+        "/security",
+        "/admin/storage",
+        "/",
+        "/instruments",
+        "/chart/uid-sber",
+        "/journal",
+        "/backtest",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200, f"{path}: {response.text[:600]}"
+        assert "Red-Bot Control Panel" in response.text, path
+        assert "/static/css/app.css" in response.text, path
 
 
 async def test_storage_endpoint_reports_usage(client: Any, duckdb_client: Any) -> None:

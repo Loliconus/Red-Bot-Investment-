@@ -33,7 +33,7 @@ from core.domain.entities import (
     TradePlan,
     TradeThesis,
 )
-from core.domain.enums import MarketRegime, Timeframe, TradePlanStatus, Trend
+from core.domain.enums import DecisionType, MarketRegime, Timeframe, TradePlanStatus, Trend
 from core.domain.value_objects import (
     OHLCV,
     CandleSeries,
@@ -43,6 +43,7 @@ from core.domain.value_objects import (
 from core.journal.hypothesis_engine import Hypothesis
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
 from core.journal.trade_review import TradeReview
+from core.ports.persistence import DecisionRecord, GuiAuditEntry, WsReplayEvent
 
 logger = structlog.get_logger(__name__)
 
@@ -293,6 +294,45 @@ class DuckDBRepository:
             ],
         )
         return snapshot.id
+
+    async def list_recent_decisions(self, limit: int = 50) -> list[DecisionRecord]:
+        rows = await self._arun(
+            "SELECT d.id, d.market_snapshot_id, d.trade_plan_id, d.decision, "
+            "d.confluence_score, d.reasoning, d.risk_check_passed, d.risk_check_reason, "
+            "d.thought_text, d.created_at, m.instrument_uid "
+            "FROM decision_snapshots d LEFT JOIN market_snapshots m ON m.id = d.market_snapshot_id "
+            "ORDER BY d.created_at DESC LIMIT ?",
+            [min(max(limit, 1), 500)],
+        )
+        return [
+            DecisionRecord(
+                instrument_uid=row[10] or "",
+                snapshot=DecisionSnapshot(
+                    id=UUID(row[0]),
+                    market_snapshot_id=UUID(row[1]),
+                    trade_plan_id=UUID(row[2]) if row[2] else None,
+                    decision=DecisionType(row[3]),
+                    confluence_score=_dec(row[4]),
+                    reasoning_chain=tuple(
+                        ReasoningStep(
+                            module=step["module"],
+                            signal=step["signal"],
+                            weight=_dec(step["weight"]),
+                            raw_value=_dec(step["raw_value"])
+                            if step.get("raw_value") is not None
+                            else None,
+                            comment=step.get("comment", ""),
+                        )
+                        for step in json.loads(row[5])
+                    ),
+                    risk_check_passed=bool(row[6]),
+                    risk_check_reason=row[7],
+                    thought_text=row[8],
+                    created_at=_dt(row[9]),
+                ),
+            )
+            for row in rows
+        ]
 
     async def save_decision_snapshots_bulk(self, snapshots: Any) -> None:
         for snapshot in snapshots:
@@ -654,7 +694,114 @@ class DuckDBRepository:
 
         Мутирующие запросы отвергаются на уровне пула подключений.
         """
-        return await asyncio.to_thread(self._pool.query_readonly, sql)
+        return await asyncio.to_thread(self._pool.query_readonly, sql, params)
+
+    async def read_query(self, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+        return await asyncio.to_thread(self._pool.query_readonly_with_columns, sql)
+
+    async def append_gui_audit(self, entry: GuiAuditEntry) -> None:
+        await self._arun(
+            "INSERT INTO gui_audit (id, ts, section, action, before_value, after_value, outcome) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                str(entry.id),
+                entry.ts,
+                entry.section,
+                entry.action,
+                _to_json(entry.before),
+                _to_json(entry.after),
+                entry.outcome,
+            ],
+        )
+
+    async def list_gui_audit(
+        self,
+        *,
+        section: str | None = None,
+        action: str | None = None,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[GuiAuditEntry]:
+        where = []
+        params: list[Any] = []
+        if section:
+            where.append("section = ?")
+            params.append(section)
+        if action:
+            where.append("action = ?")
+            params.append(action)
+        if since:
+            where.append("ts >= ?")
+            params.append(since)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        rows = await self._arun(
+            "SELECT id, ts, section, action, before_value, after_value, outcome "
+            f"FROM gui_audit{clause} ORDER BY ts DESC LIMIT ?",
+            [*params, min(max(limit, 1), 500)],
+        )
+        return [
+            GuiAuditEntry(
+                id=UUID(row[0]),
+                ts=_dt(row[1]),
+                section=row[2],
+                action=row[3],
+                before=json.loads(row[4]),
+                after=json.loads(row[5]),
+                outcome=row[6],
+            )
+            for row in rows
+        ]
+
+    async def get_operational_value(self, key: str) -> str | None:
+        rows = await self._arun("SELECT value FROM operational_settings WHERE key = ?", [key])
+        return str(rows[0][0]) if rows else None
+
+    async def set_operational_value(self, key: str, value: str) -> None:
+        await self._arun(
+            "INSERT OR REPLACE INTO operational_settings (key, value, updated_at) VALUES (?, ?, ?)",
+            [key, value, datetime.now(tz=UTC)],
+        )
+
+    async def append_ws_event(self, entry: WsReplayEvent) -> None:
+        await self._arun(
+            "INSERT INTO ws_replay (channel, seq, ts, event_type, payload) VALUES (?, ?, ?, ?, ?)",
+            [entry.channel, entry.seq, entry.ts, entry.event_type, _to_json(entry.payload)],
+        )
+
+    async def list_ws_events(
+        self, channel: str, since_seq: int, limit: int = 1000
+    ) -> list[WsReplayEvent]:
+        rows = await self._arun(
+            "SELECT seq, ts, event_type, payload FROM ws_replay "
+            "WHERE channel = ? AND seq > ? ORDER BY seq LIMIT ?",
+            [channel, since_seq, min(max(limit, 1), 5000)],
+        )
+        return [
+            WsReplayEvent(
+                channel=channel,
+                seq=int(row[0]),
+                ts=_dt(row[1]),
+                event_type=row[2],
+                payload=json.loads(row[3]),
+            )
+            for row in rows
+        ]
+
+    async def last_ws_seq(self, channel: str) -> int:
+        rows = await self._arun(
+            "SELECT COALESCE(max(seq), 0) FROM ws_replay WHERE channel = ?", [channel]
+        )
+        return int(rows[0][0]) if rows else 0
+
+    async def set_memory_limit_mb(self, limit_mb: int) -> None:
+        await asyncio.to_thread(self._pool.set_memory_limit_mb, limit_mb)
+
+    async def memory_used_bytes(self) -> int | None:
+        try:
+            rows = await self._arun("SELECT sum(memory_usage_bytes) FROM duckdb_memory()")
+            return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+        except Exception:  # noqa: BLE001 — разные версии DuckDB дают разные исключения
+            return None  # Показываем «н/д», не выдумываем 0
 
     async def table_sizes(self) -> dict[str, int]:
         sizes: dict[str, int] = {}
