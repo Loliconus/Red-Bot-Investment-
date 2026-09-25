@@ -1,0 +1,389 @@
+"""Фейковые реализации портов для тестов.
+
+Это не «заглушки ради покрытия»: фейки — второй реализации портов, поэтому
+контрактные тесты гоняют один и тот же набор проверок и против них, и против
+настоящих адаптеров. Расхождение поведения фейка и адаптера означает ошибку
+в одном из них.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from core.domain.entities import (
+    Instrument,
+    OrderResult,
+    OrderState,
+    Position,
+    StrategyConfig,
+    TradePlan,
+)
+from core.domain.enums import OrderStatus, Timeframe
+from core.domain.value_objects import OHLCV, OrderbookSnapshot
+from core.journal.hypothesis_engine import Hypothesis
+from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
+from core.journal.trade_review import TradeReview
+from core.ports.clock import FrozenClock
+
+ZERO = Decimal("0")
+
+
+class FakeMarketData:
+    """Рыночные данные из заранее подготовленных серий."""
+
+    def __init__(
+        self,
+        candles: dict[tuple[str, Timeframe], Sequence[OHLCV]] | None = None,
+        *,
+        instruments: dict[tuple[str, str], Instrument] | None = None,
+        orderbook: OrderbookSnapshot | None = None,
+        indicators: dict[tuple[str, str, Timeframe], dict[str, float | None]] | None = None,
+        raise_on_orderbook: bool = False,
+    ) -> None:
+        self._candles = candles or {}
+        self._instruments = instruments or {}
+        self._orderbook = orderbook
+        self._indicators = indicators or {}
+        self._raise_on_orderbook = raise_on_orderbook
+        self.calls: list[str] = []
+
+    async def get_candles(
+        self,
+        instrument: Instrument,
+        timeframe: Timeframe,
+        from_: datetime,
+        to: datetime,
+    ) -> list[OHLCV]:
+        self.calls.append(f"get_candles:{instrument.uid}:{timeframe.value}")
+        series = self._candles.get((instrument.uid, timeframe), ())
+        return [c for c in series if from_ <= c.timestamp <= to]
+
+    async def stream_candles(
+        self,
+        instrument: Instrument,
+        timeframe: Timeframe,
+    ) -> AsyncIterator[OHLCV]:
+        for candle in self._candles.get((instrument.uid, timeframe), ()):
+            yield candle
+
+    async def get_orderbook(self, instrument: Instrument, depth: int = 20) -> OrderbookSnapshot:
+        self.calls.append(f"get_orderbook:{instrument.uid}")
+        if self._raise_on_orderbook or self._orderbook is None:
+            msg = "стакан недоступен"
+            raise RuntimeError(msg)
+        return self._orderbook
+
+    async def get_api_indicator(
+        self,
+        instrument: Instrument,
+        indicator: str,
+        timeframe: Timeframe,
+        params: Mapping[str, Any],
+    ) -> dict[str, float | None]:
+        return self._indicators.get((instrument.uid, indicator, timeframe), {})
+
+    async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
+        key = (ticker, class_code)
+        if key not in self._instruments:
+            msg = f"Инструмент {ticker}.{class_code} не найден"
+            raise ValueError(msg)
+        return self._instruments[key]
+
+    async def aclose(self) -> None:
+        self.calls.clear()
+
+
+class FakeBroker:
+    """Исполнение «на месте»: мгновенный fill по цене плана."""
+
+    def __init__(self, *, account_id: str = "fake-account") -> None:
+        self.account_id = account_id
+        self.placed: list[tuple[TradePlan, int]] = []
+        self.cancelled: list[str] = []
+        self.closed: list[tuple[Position, str]] = []
+        self.positions: list[Position] = []
+        self._counter = 0
+
+    async def place_order(self, plan: TradePlan, quantity: int) -> OrderResult:
+        self._counter += 1
+        self.placed.append((plan, quantity))
+        self.positions.append(
+            Position(
+                instrument=plan.instrument,
+                quantity=quantity * plan.instrument.lot_size,
+                average_entry=plan.entry_price,
+                opened_at=datetime.now(tz=UTC),
+                linked_plan_id=plan.id,
+            )
+        )
+        return OrderResult(
+            order_id=f"fake-{self._counter}",
+            client_order_id=str(plan.id),
+            status=OrderStatus.FILLED,
+            filled_lots=quantity,
+            filled_price=plan.entry_price,
+            message="симулировано",
+        )
+
+    async def cancel_order(self, order_id: str) -> None:
+        self.cancelled.append(order_id)
+
+    async def get_order_status(self, order_id: str) -> OrderState:
+        return OrderState(order_id=order_id, status=OrderStatus.FILLED, filled_lots=1)
+
+    async def close_position(self, position: Position, reason: str) -> OrderResult:
+        self._counter += 1
+        self.closed.append((position, reason))
+        self.positions = [p for p in self.positions if p.linked_plan_id != position.linked_plan_id]
+        return OrderResult(
+            order_id=f"fake-close-{self._counter}",
+            client_order_id=f"{position.linked_plan_id}-close",
+            status=OrderStatus.FILLED,
+            filled_lots=position.lots,
+            filled_price=position.average_entry,
+            message=reason,
+        )
+
+    async def get_open_positions(self) -> list[Position]:
+        return list(self.positions)
+
+    async def get_instrument(self, uid: str) -> Instrument | None:
+        return Instrument(uid=uid, ticker=uid, lot_size=1)
+
+    async def aclose(self) -> None:
+        self.placed.clear()
+
+
+class InMemoryRepository:
+    """Репозиторий в памяти: та же семантика, что у DuckDB-версии."""
+
+    def __init__(self) -> None:
+        self.market_snapshots: dict[UUID, MarketSnapshot] = {}
+        self.decision_snapshots: dict[UUID, DecisionSnapshot] = {}
+        self.plans: dict[UUID, TradePlan] = {}
+        self.reviews: dict[UUID, TradeReview] = {}
+        self.hypotheses: dict[UUID, Hypothesis] = {}
+        self.configs: dict[int, StrategyConfig] = {}
+        self.instruments: dict[str, Instrument] = {}
+        self.portfolio_states: list[str] = []
+
+    async def save_market_snapshot(self, snapshot: MarketSnapshot) -> UUID:
+        self.market_snapshots[snapshot.id] = snapshot
+        return snapshot.id
+
+    async def get_market_snapshot(self, snapshot_id: UUID) -> MarketSnapshot | None:
+        return self.market_snapshots.get(snapshot_id)
+
+    async def save_decision_snapshot(self, snapshot: DecisionSnapshot) -> UUID:
+        self.decision_snapshots[snapshot.id] = snapshot
+        return snapshot.id
+
+    async def save_decision_snapshots_bulk(self, snapshots: Sequence[DecisionSnapshot]) -> None:
+        for snapshot in snapshots:
+            await self.save_decision_snapshot(snapshot)
+
+    async def save_trade_plan(self, plan: TradePlan) -> None:
+        self.plans[plan.id] = plan
+
+    async def get_trade_plan(self, plan_id: UUID) -> TradePlan | None:
+        return self.plans.get(plan_id)
+
+    async def get_open_trade_plans(self) -> list[TradePlan]:
+        return [p for p in self.plans.values() if p.is_open]
+
+    async def get_trade_history(
+        self, instrument: Instrument | None, since: datetime
+    ) -> list[TradeReview]:
+        reviews = [r for r in self.reviews.values() if r.closed_at >= since]
+        return sorted(reviews, key=lambda r: r.closed_at)
+
+    async def save_trade_review(self, review: TradeReview) -> None:
+        self.reviews[review.trade_plan_id] = review
+
+    async def save_hypothesis(self, hypothesis: Hypothesis) -> None:
+        self.hypotheses[hypothesis.id] = hypothesis
+
+    async def list_hypotheses(self, status: str | None = None) -> list[Hypothesis]:
+        items = list(self.hypotheses.values())
+        if status:
+            items = [h for h in items if h.status.value == status]
+        return sorted(items, key=lambda h: h.confidence, reverse=True)
+
+    async def save_strategy_config(self, config: StrategyConfig) -> None:
+        self.configs[config.version] = config
+
+    async def get_active_strategy_config(self) -> StrategyConfig | None:
+        if not self.configs:
+            return None
+        return self.configs[max(self.configs)]
+
+    async def save_instrument(self, instrument: Instrument) -> None:
+        self.instruments[instrument.uid] = instrument
+
+    async def list_instruments(self) -> list[Instrument]:
+        return list(self.instruments.values())
+
+    async def save_portfolio_state(self, state_json: str) -> None:
+        self.portfolio_states.append(state_json)
+
+    async def execute_readonly(
+        self, sql: str, params: Sequence[Any] | None = None
+    ) -> list[tuple[Any, ...]]:
+        msg = "SQL-консоль требует DuckDB-репозиторий: фейк SQL не исполняет"
+        raise NotImplementedError(msg)
+
+    async def table_sizes(self) -> dict[str, int]:
+        return {
+            "candles": 0,
+            "market_snapshots": len(self.market_snapshots),
+            "decision_snapshots": len(self.decision_snapshots),
+            "orderbook_snapshots": 0,
+            "trade_plans": len(self.plans),
+            "trades": len(self.reviews),
+        }
+
+    async def aclose(self) -> None:
+        self.market_snapshots.clear()
+        self.plans.clear()
+
+
+class FakeArchive:
+    """Архив в памяти."""
+
+    def __init__(self, *, usage: dict[str, int] | None = None) -> None:
+        self.calls: list[str] = []
+        self._usage = usage or {"hot": 1024, "warm": 2048, "cold": 4096}
+
+    async def archive_snapshots(self, older_than: datetime) -> int:
+        self.calls.append(f"archive:{older_than.isoformat()}")
+        return 42
+
+    async def compact_cold_archive(self) -> int:
+        self.calls.append("compact")
+        return 128
+
+    async def usage_by_layer(self) -> dict[str, int]:
+        return dict(self._usage)
+
+    async def total_usage_bytes(self) -> int:
+        return sum(self._usage.values())
+
+    async def export_backup(self, destination: Path) -> Path:
+        await asyncio.to_thread(destination.mkdir, parents=True, exist_ok=True)
+        self.calls.append(f"export:{destination}")
+        return destination
+
+    async def restore_backup(self, source: Path) -> None:
+        self.calls.append(f"restore:{source}")
+
+    async def aclose(self) -> None:
+        self.calls.clear()
+
+
+class FakeNotifier:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str]] = []
+        self.critical: list[str] = []
+
+    async def send(self, message: str, *, level: str = "info") -> None:
+        self.messages.append((level, message))
+
+    async def send_critical(self, message: str) -> None:
+        self.critical.append(message)
+
+
+# ------------------------------------------------------------------ генераторы
+def make_candles(
+    *,
+    start: datetime,
+    count: int,
+    timeframe: Timeframe,
+    base_price: Decimal = Decimal("100"),
+    step: Decimal = Decimal("0.5"),
+    volume: int = 1000,
+) -> tuple[OHLCV, ...]:
+    """Генерирует монотонно растущий ряд свечей."""
+    candles: list[OHLCV] = []
+    delta = {"1d": timedelta(days=1), "1h": timedelta(hours=1), "1m": timedelta(minutes=1)}[
+        timeframe.value
+    ]
+    for i in range(count):
+        price = base_price + step * Decimal(i)
+        candles.append(
+            OHLCV(
+                open=price,
+                high=price + Decimal("1"),
+                low=price - Decimal("1"),
+                close=price + step / 2,
+                volume=volume + i,
+                timestamp=start + delta * i,
+                timeframe=timeframe,
+            )
+        )
+    return tuple(candles)
+
+
+def make_orderbook(
+    *,
+    mid: Decimal = Decimal("100"),
+    spread: Decimal = Decimal("0.05"),
+    levels: int = 5,
+    bid_volume: int = 1000,
+    ask_volume: int = 500,
+    captured_at: datetime | None = None,
+) -> OrderbookSnapshot:
+    from core.domain.value_objects import OrderbookLevel
+
+    captured = captured_at or datetime(2026, 1, 5, 10, 0, tzinfo=UTC)
+    half = spread / 2
+    bids = tuple(
+        OrderbookLevel(price=mid - half - Decimal(i) * Decimal("0.01"), quantity=bid_volume)
+        for i in range(levels)
+    )
+    asks = tuple(
+        OrderbookLevel(price=mid + half + Decimal(i) * Decimal("0.01"), quantity=ask_volume)
+        for i in range(levels)
+    )
+    return OrderbookSnapshot(bids=bids, asks=asks, captured_at=captured)
+
+
+def make_config(**overrides: Any) -> StrategyConfig:
+    from config.seed_defaults import DEFAULT_CONFLUENCE_WEIGHTS
+
+    params: dict[str, Any] = {
+        "version": 1,
+        "risk_per_trade_pct": Decimal("0.01"),
+        "min_viable_target_multiplier": Decimal("2"),
+        "commission_rate": Decimal("0.003"),
+        "max_holding_hours": 72,
+        "max_position_notional": Decimal("1000000"),
+        "confluence_threshold": Decimal("0.3"),
+        "confluence_weights": dict(DEFAULT_CONFLUENCE_WEIGHTS),
+    }
+    params.update(overrides)
+    return StrategyConfig(**params)
+
+
+def make_clock() -> FrozenClock:
+    return FrozenClock(datetime(2026, 1, 10, 10, 0, tzinfo=UTC))
+
+
+def make_instrument(
+    *,
+    uid: str = "uid-sber",
+    ticker: str = "SBER",
+    lot_size: int = 10,
+    is_benchmark: bool = False,
+) -> Instrument:
+    return Instrument(
+        uid=uid,
+        ticker=ticker,
+        lot_size=lot_size,
+        is_benchmark=is_benchmark,
+    )
