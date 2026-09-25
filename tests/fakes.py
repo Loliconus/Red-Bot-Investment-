@@ -30,6 +30,7 @@ from core.journal.hypothesis_engine import Hypothesis
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
 from core.journal.trade_review import TradeReview
 from core.ports.clock import FrozenClock
+from core.ports.persistence import DecisionRecord, GuiAuditEntry, WsReplayEvent
 
 ZERO = Decimal("0")
 
@@ -172,6 +173,9 @@ class InMemoryRepository:
         self.configs: dict[int, StrategyConfig] = {}
         self.instruments: dict[str, Instrument] = {}
         self.portfolio_states: list[str] = []
+        self.gui_audit: list[GuiAuditEntry] = []
+        self.operational_values: dict[str, str] = {}
+        self.ws_events: list[WsReplayEvent] = []
 
     async def save_market_snapshot(self, snapshot: MarketSnapshot) -> UUID:
         self.market_snapshots[snapshot.id] = snapshot
@@ -187,6 +191,21 @@ class InMemoryRepository:
     async def save_decision_snapshots_bulk(self, snapshots: Sequence[DecisionSnapshot]) -> None:
         for snapshot in snapshots:
             await self.save_decision_snapshot(snapshot)
+
+    async def list_recent_decisions(self, limit: int = 50) -> list[DecisionRecord]:
+        return [
+            DecisionRecord(
+                instrument_uid=self.market_snapshots[item.market_snapshot_id].instrument_uid
+                if item.market_snapshot_id in self.market_snapshots
+                else "",
+                snapshot=item,
+            )
+            for item in sorted(
+                self.decision_snapshots.values(),
+                key=lambda decision: decision.created_at,
+                reverse=True,
+            )[:limit]
+        ]
 
     async def save_trade_plan(self, plan: TradePlan) -> None:
         self.plans[plan.id] = plan
@@ -237,6 +256,54 @@ class InMemoryRepository:
     ) -> list[tuple[Any, ...]]:
         msg = "SQL-консоль требует DuckDB-репозиторий: фейк SQL не исполняет"
         raise NotImplementedError(msg)
+
+    async def read_query(self, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+        raise NotImplementedError("SQL-консоль требует DuckDB")
+
+    async def append_gui_audit(self, entry: GuiAuditEntry) -> None:
+        self.gui_audit.append(entry)
+
+    async def list_gui_audit(
+        self,
+        *,
+        section: str | None = None,
+        action: str | None = None,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[GuiAuditEntry]:
+        entries = [
+            entry
+            for entry in self.gui_audit
+            if (section is None or entry.section == section)
+            and (action is None or entry.action == action)
+            and (since is None or entry.ts >= since)
+        ]
+        return list(reversed(entries))[:limit]
+
+    async def get_operational_value(self, key: str) -> str | None:
+        return self.operational_values.get(key)
+
+    async def set_operational_value(self, key: str, value: str) -> None:
+        self.operational_values[key] = value
+
+    async def append_ws_event(self, entry: WsReplayEvent) -> None:
+        self.ws_events.append(entry)
+
+    async def list_ws_events(
+        self, channel: str, since_seq: int, limit: int = 1000
+    ) -> list[WsReplayEvent]:
+        return [
+            entry for entry in self.ws_events if entry.channel == channel and entry.seq > since_seq
+        ][:limit]
+
+    async def last_ws_seq(self, channel: str) -> int:
+        return max((entry.seq for entry in self.ws_events if entry.channel == channel), default=0)
+
+    async def set_memory_limit_mb(self, limit_mb: int) -> None:
+        self.operational_values["duckdb_memory_limit_mb"] = str(limit_mb)
+
+    async def memory_used_bytes(self) -> int | None:
+        return None
 
     async def table_sizes(self) -> dict[str, int]:
         return {

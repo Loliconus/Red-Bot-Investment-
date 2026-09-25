@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="description" content="Red-Bot — локальная панель управления автономной торговой системой">
+  <title>{{ title }} · Red-Bot Control Panel</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script defer src="/static/vendor/htmx.min.js"></script>
+  <script defer src="/static/js/app-shell.js"></script>
+  <script defer src="/static/js/ws-client.js"></script>
+  <script defer src="/static/js/command-palette.js"></script>
+  <script defer src="/static/vendor/alpine.min.js"></script>
+  {% block head %}{% endblock %}
+</head>
+<body x-data="redBotShell()" x-bind:class="(sidebarCollapsed ? 'sidebar-collapsed ' : '') + (mobileOpen ? 'mobile-sidebar-open' : '')" data-section="{{ section }}" data-authenticated="{{ 'true' if authenticated else 'false' }}" data-mode="{{ mode }}">
+  <div id="mode-stripe" class="mode-stripe mode-{{ mode|lower }}" aria-label="Контур исполнения: {{ mode }}"></div>
+  <div class="shell {% if not authenticated %}shell-public{% endif %}">
+    {% if authenticated %}
+    <aside class="sidebar" aria-label="Навигация">
+      <div class="sidebar-brand">
+        <a href="/control" class="brand-mark" aria-label="Red-Bot — пульт управления"><span class="brand-bot">R</span><span class="brand-spark">●</span></a>
+        <div class="brand-name"><strong>RED<span>BOT</span></strong><small>CONTROL PANEL</small></div>
+        <button class="icon-button sidebar-toggle" type="button" aria-label="Свернуть меню" x-on:click="toggleSidebar()">⟪</button>
+      </div>
+      <div class="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+      <nav class="sidebar-nav">
+      {% for item in nav %}
+        <a href="{{ item.path }}" class="nav-item {% if section == item.key %}nav-active{% endif %}" {% if section == item.key %}aria-current="page"{% endif %} title="{{ item.label }}">
+          <span class="nav-icon" aria-hidden="true">{{ item.icon }}</span><span class="nav-label">{{ item.label }}</span>
+          {% if item.priority == 'P0' %}<span class="nav-priority">●</span>{% endif %}
+        </a>
+      {% endfor %}
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="environment-tile"><span class="environment-dot"></span><div><strong>Локальная сессия</strong><small>Доступ только оператору</small></div></div>
+        <form action="/logout" method="post" x-on:submit.prevent="logout()"><button class="nav-item logout" type="submit"><span class="nav-icon">↪</span><span class="nav-label">Выйти из панели</span></button></form>
+      </div>
+    </aside>
+    {% endif %}
+    <div class="main-column">
+      <header class="topbar">
+        <div class="topbar-left">
+          {% if authenticated %}<button class="mobile-menu icon-button" x-on:click="mobileOpen = !mobileOpen" aria-label="Меню">☰</button>{% endif %}
+          <div class="breadcrumb"><span>REDBOT</span><span class="crumb-sep">/</span><strong>{{ title }}</strong></div>
+          {% if mode == 'LIVE' %}<span class="mode-badge live">● LIVE</span>{% elif mode == 'SANDBOX' %}<span class="mode-badge sandbox">● SANDBOX</span>{% else %}<span class="mode-badge backtest">● BACKTEST{% if run_id %} · {{ run_id }}{% endif %}</span>{% endif %}
+        </div>
+        <div class="topbar-right">
+          {% if authenticated %}<button class="palette-trigger" id="palette-trigger" aria-label="Открыть командную палитру" x-on:click="openPalette()"><span>⌕</span> Поиск и команды <kbd>⌘ K</kbd></button>{% endif %}
+          <div class="session-clock" title="Время торговой сессии MOEX"><small>МОСКВА / MOEX</small><span id="moex-clock">--:--:--</span><span id="moex-phase" class="phase-badge">…</span></div>
+          {% if authenticated %}<div class="topbar-indicators"><span class="connection-status" id="scheduler-indicator" title="Scheduler"><i></i><span>Планировщик</span></span><span class="connection-status" id="ws-indicator" title="WebSocket"><i></i><span>WS …</span></span></div>
+          <button class="icon-button" type="button" x-on:click="toggleTheme()" aria-label="Переключить тему" title="Светлая / тёмная тема">◐</button><button class="icon-button notification-button" type="button" x-on:click="notificationsOpen = !notificationsOpen" aria-label="Уведомления">♢<span class="notification-count" id="notification-count" hidden>0</span></button>{% endif %}
+        </div>
+      </header>
+      <div class="offline-banner" id="offline-banner" hidden role="alert">⚠ Потеряна связь с сервером. Данные могут быть устаревшими. Последнее обновление: <strong id="last-update">нет данных</strong>. Формы администрирования доступны через HTTP.</div>
+      {% if restart_required %}<div class="restart-banner" role="alert">Для применения смены счёта, токена или восстановления БД требуется полный рестарт приложения. Запуск бота из GUI заблокирован.</div>{% endif %}
+      <main class="page-content" id="page-content">{% block content %}{% endblock %}</main>
+      <footer class="statusbar" aria-label="Ресурсы бота">
+        <div class="statusbar-label">● СИСТЕМА</div>
+        <div class="status-metric" id="metric-cpu"><small>CPU БОТА</small><strong>—</strong></div>
+        <div class="status-metric" id="metric-ram"><small>RAM GUI/БОТ</small><strong>—</strong></div>
+        <div class="status-metric" id="metric-db"><small>RAM DUCKDB</small><strong>—</strong></div>
+        <div class="status-metric" id="metric-disk"><small>ДИСК СВОБОДНО</small><strong>—</strong></div>
+        <div class="status-metric" id="metric-latency"><small>БРОКЕР LATENCY</small><strong>—</strong></div>
+        <div class="statusbar-right">{{ mode }} <span>●</span> RED-BOT v0.2</div>
+      </footer>
+    </div>
+  </div>
+  {% if authenticated %}
+  <div class="overlay" x-show="paletteOpen" x-cloak x-on:click.self="paletteOpen = false" x-on:keydown.escape.window="paletteOpen = false" role="presentation">
+    <div class="command-dialog" role="dialog" aria-modal="true" aria-label="Командная палитра" id="command-dialog">
+      <div class="command-search"><span>⌕</span><input id="command-input" type="search" placeholder="Перейти к разделу, найти тикер или действие…" autocomplete="off" aria-label="Команда"><kbd>ESC</kbd></div>
+      <div id="command-results" class="command-results"></div>
+      <div class="command-hint">↑ ↓ выбор · Enter перейти · Ctrl/Cmd+K открыть</div>
+    </div>
+  </div>
+  <div class="overlay" x-show="notificationsOpen" x-cloak x-on:click.self="notificationsOpen = false" role="presentation"><div class="notification-drawer" role="dialog" aria-label="Уведомления"><div class="drawer-head"><h2>Уведомления</h2><button class="icon-button" x-on:click="notificationsOpen = false" aria-label="Закрыть">×</button></div><div id="notification-list" class="notification-list"><p class="empty-subtle">Событий пока нет</p></div></div></div>
+  <div id="modal-root"></div>
+  <div id="toast-stack" class="toast-stack" role="status" aria-live="polite"></div>
+  {% endif %}
+</body>
+</html>

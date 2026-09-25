@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL_STATEMENTS: tuple[str, ...] = (
     """
@@ -142,6 +142,34 @@ DDL_STATEMENTS: tuple[str, ...] = (
         updated_at TIMESTAMPTZ NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS gui_audit (
+        id VARCHAR PRIMARY KEY,
+        ts TIMESTAMPTZ NOT NULL,
+        section VARCHAR NOT NULL,
+        action VARCHAR NOT NULL,
+        before_value VARCHAR NOT NULL,
+        after_value VARCHAR NOT NULL,
+        outcome VARCHAR NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS operational_settings (
+        key VARCHAR PRIMARY KEY,
+        value VARCHAR NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ws_replay (
+        channel VARCHAR NOT NULL,
+        seq BIGINT NOT NULL,
+        ts TIMESTAMPTZ NOT NULL,
+        event_type VARCHAR NOT NULL,
+        payload VARCHAR NOT NULL,
+        PRIMARY KEY (channel, seq)
+    )
+    """,
 )
 
 INDEX_STATEMENTS: tuple[str, ...] = (
@@ -150,6 +178,7 @@ INDEX_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_decision_created ON decision_snapshots (created_at)",
     "CREATE INDEX IF NOT EXISTS idx_plans_status ON trade_plans (status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_trades_closed ON trades (closed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_gui_audit_time ON gui_audit (ts)",
 )
 
 
@@ -174,4 +203,7 @@ TABLES: tuple[str, ...] = (
     "hypotheses",
     "strategy_configs",
     "portfolio_states",
+    "gui_audit",
+    "operational_settings",
+    "ws_replay",
 )

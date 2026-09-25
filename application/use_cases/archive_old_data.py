@@ -38,7 +38,11 @@ async def archive_old_data(ctx: AppContext) -> ArchiveReport:
         )
 
     now = ctx.clock.now()
-    cutoff = now - timedelta(days=ctx.settings.storage.warm_retention_days)
+    retention = int(
+        await ctx.repository.get_operational_value("warm_retention_days")
+        or ctx.settings.storage.warm_retention_days
+    )
+    cutoff = now - timedelta(days=retention)
 
     archived = await ctx.archive.archive_snapshots(older_than=cutoff)
     freed = await ctx.archive.compact_cold_archive()

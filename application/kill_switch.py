@@ -55,6 +55,10 @@ class KillSwitch:
     def engaged_at(self) -> datetime | None:
         return self._engaged_at
 
+    @property
+    def initiated_by(self) -> str:
+        return self._initiated_by
+
     async def engage(self, reason: str, *, initiated_by: str = "system") -> None:
         """Включает блокировку."""
         if self._engaged:
