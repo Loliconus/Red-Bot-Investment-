@@ -101,6 +101,21 @@ def run(
     asyncio.run(_run(mode, account, host or None, port or None, with_gui=with_gui))
 
 
+def _parse_account_choice(choice: str, accounts: Sequence[dict[str, Any]]) -> str:
+    """Принимает показанный номер счёта или его полный ID."""
+    choice = choice.strip()
+    for account_item in accounts:
+        account_id = str(account_item["id"])
+        if choice == account_id:
+            return account_id
+
+    if choice.isdecimal():
+        index = int(choice)
+        if 1 <= index <= len(accounts):
+            return str(accounts[index - 1]["id"])
+    raise ValueError("Введите номер счёта из списка или его полный ID")
+
+
 def _prompt_for_account(accounts: Sequence[dict[str, Any]]) -> str:
     from application.use_cases.select_account import ACCOUNT_TYPE_LABELS
 
@@ -116,7 +131,13 @@ def _prompt_for_account(accounts: Sequence[dict[str, Any]]) -> str:
         raise typer.BadParameter(
             "Выбор счёта требует интерактивного терминала; повторите запуск с --account <ID>"
         )
-    return typer.prompt("Введите ID счёта из списка")
+
+    while True:
+        choice = typer.prompt("Введите номер счёта из списка или его полный ID")
+        try:
+            return _parse_account_choice(choice, accounts)
+        except ValueError as exc:
+            typer.echo(str(exc))
 
 
 async def _run(
