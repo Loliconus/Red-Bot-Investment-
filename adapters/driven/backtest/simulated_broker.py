@@ -16,7 +16,14 @@ from uuid import UUID
 
 import structlog
 
-from core.domain.entities import Instrument, OrderResult, OrderState, Position, TradePlan
+from core.domain.entities import (
+    Instrument,
+    OrderResult,
+    OrderState,
+    PortfolioState,
+    Position,
+    TradePlan,
+)
 from core.domain.enums import OrderStatus
 
 logger = structlog.get_logger(__name__)
@@ -47,6 +54,50 @@ class SimulatedBroker:
     fills: list[SimulatedFill] = field(default_factory=list)
     orders: dict[str, OrderState] = field(default_factory=dict)
     _counter: int = 0
+    _balance: Decimal = Decimal("1000000")
+    _accounts: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "id": "sim-sandbox-01",
+                "name": "Основной счёт в песочнице",
+                "status": 1,
+                "type": 1,
+                "is_current": True,
+            }
+        ]
+    )
+
+    async def get_portfolio(self) -> PortfolioState | None:
+        positions = await self.get_open_positions()
+        pos_val = sum((p.market_value(p.average_entry) for p in positions), ZERO)
+        return PortfolioState(
+            account_id=self.account_id,
+            total_value=self._balance + pos_val,
+            available_cash=self._balance,
+            positions_value=pos_val,
+            updated_at=datetime.now(tz=UTC),
+        )
+
+    async def get_sandbox_accounts(self) -> list[dict[str, Any]]:
+        for acc in self._accounts:
+            acc["is_current"] = acc["id"] == self.account_id
+        return list(self._accounts)
+
+    async def open_sandbox_account(self, name: str = "Новый счёт в песочнице") -> str:
+        new_id = f"sim-sandbox-{len(self._accounts) + 1:02d}"
+        self._accounts.append(
+            {"id": new_id, "name": name, "status": 1, "type": 1, "is_current": False}
+        )
+        return new_id
+
+    async def close_sandbox_account(self, account_id: str) -> None:
+        self._accounts = [a for a in self._accounts if a["id"] != account_id]
+
+    async def sandbox_pay_in(
+        self, account_id: str, amount: Decimal, currency: str = "rub"
+    ) -> Decimal:
+        self._balance += amount
+        return self._balance
 
     def set_price(self, instrument_uid: str, price: Decimal) -> None:
         """Задаёт текущую цену инструмента (обычно из реплея)."""

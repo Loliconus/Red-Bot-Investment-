@@ -28,7 +28,14 @@ from adapters.driven.tbank.mappers import (
     post_order_response_to_domain,
 )
 from adapters.driven.tbank.retry import retry_async
-from core.domain.entities import Instrument, OrderResult, OrderState, Position, TradePlan
+from core.domain.entities import (
+    Instrument,
+    OrderResult,
+    OrderState,
+    PortfolioState,
+    Position,
+    TradePlan,
+)
 from core.domain.enums import OrderSide
 
 if TYPE_CHECKING:
@@ -209,6 +216,24 @@ class TBankBrokerAdapter:
             lambda: self._channel.services.instruments.shares(request=request)
         )
         return [instrument_to_domain(i) for i in getattr(response, "instruments", []) or []]
+
+    async def get_portfolio(self) -> PortfolioState | None:
+        from t_tech.invest.grpc.schemas import PortfolioRequest
+
+        from adapters.driven.tbank.mappers import portfolio_response_to_domain
+
+        if not self._account_id:
+            return None
+        self._assert_managed_account(self._account_id)
+        request = PortfolioRequest(account_id=self._account_id)
+        try:
+            response = await retry_read_safe(
+                lambda: self._channel.services.operations.get_portfolio(request=request)
+            )
+            return portfolio_response_to_domain(response, account_id=self._account_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("portfolio_lookup_failed", account_id=self._account_id, error=str(exc))
+            return None
 
     async def aclose(self) -> None:
         await self._channel.aclose()

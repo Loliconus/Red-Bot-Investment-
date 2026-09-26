@@ -20,6 +20,7 @@ from core.domain.entities import (
     Instrument,
     OrderResult,
     OrderState,
+    PortfolioState,
     Position,
     StrategyConfig,
     TradePlan,
@@ -91,10 +92,15 @@ class FakeMarketData:
 
     async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
         key = (ticker, class_code)
-        if key not in self._instruments:
-            msg = f"Инструмент {ticker}.{class_code} не найден"
-            raise ValueError(msg)
-        return self._instruments[key]
+        if key in self._instruments:
+            return self._instruments[key]
+        from config.catalog import find_catalog_instrument
+
+        found = find_catalog_instrument(ticker, class_code)
+        if found is not None:
+            return found
+        msg = f"Инструмент {ticker}.{class_code} не найден"
+        raise ValueError(msg)
 
     async def aclose(self) -> None:
         self.calls.clear()
@@ -110,6 +116,46 @@ class FakeBroker:
         self.closed: list[tuple[Position, str]] = []
         self.positions: list[Position] = []
         self._counter = 0
+        self._balance = Decimal("1000000")
+        self._accounts: list[dict[str, Any]] = [
+            {
+                "id": account_id,
+                "name": "Основной счёт в песочнице",
+                "status": 1,
+                "type": 1,
+                "is_current": True,
+            }
+        ]
+
+    async def get_portfolio(self) -> PortfolioState | None:
+        return PortfolioState(
+            account_id=self.account_id,
+            total_value=self._balance,
+            available_cash=self._balance,
+            positions_value=Decimal("0"),
+            updated_at=datetime.now(tz=UTC),
+        )
+
+    async def get_sandbox_accounts(self) -> list[dict[str, Any]]:
+        for acc in self._accounts:
+            acc["is_current"] = acc["id"] == self.account_id
+        return list(self._accounts)
+
+    async def open_sandbox_account(self, name: str = "Счёт в песочнице") -> str:
+        new_id = f"fake-sandbox-{len(self._accounts) + 1:02d}"
+        self._accounts.append(
+            {"id": new_id, "name": name, "status": 1, "type": 1, "is_current": False}
+        )
+        return new_id
+
+    async def close_sandbox_account(self, account_id: str) -> None:
+        self._accounts = [a for a in self._accounts if a["id"] != account_id]
+
+    async def sandbox_pay_in(
+        self, account_id: str, amount: Decimal, currency: str = "rub"
+    ) -> Decimal:
+        self._balance += amount
+        return self._balance
 
     async def place_order(self, plan: TradePlan, quantity: int) -> OrderResult:
         self._counter += 1
@@ -245,11 +291,28 @@ class InMemoryRepository:
     async def save_instrument(self, instrument: Instrument) -> None:
         self.instruments[instrument.uid] = instrument
 
+    async def delete_instrument(self, uid: str) -> None:
+        self.instruments.pop(uid, None)
+
     async def list_instruments(self) -> list[Instrument]:
         return list(self.instruments.values())
 
     async def save_portfolio_state(self, state_json: str) -> None:
         self.portfolio_states.append(state_json)
+
+    async def get_latest_portfolio_state(self) -> PortfolioState | None:
+        if not self.portfolio_states:
+            return None
+        import json
+
+        payload = json.loads(self.portfolio_states[-1])
+        return PortfolioState(
+            account_id=payload["account_id"],
+            total_value=Decimal(payload["total_value"]),
+            available_cash=Decimal(payload["available_cash"]),
+            positions_value=Decimal(payload["positions_value"]),
+            updated_at=datetime.fromisoformat(payload["updated_at"]),
+        )
 
     async def execute_readonly(
         self, sql: str, params: Sequence[Any] | None = None

@@ -147,6 +147,7 @@ async def dashboard_view(context: AppContext, *, period: str = "session") -> dic
         "plans": cards,
         "decisions": [decision_view(record, context) for record in records],
         "portfolio": {
+            "account_id": context.active_account_id,
             "balance": str(balance) if balance is not None else None,
             "realized": str(sum((r.realized_pnl for r in reviews), Decimal("0"))),
             "unrealized": None,  # нет свежей оценки всех позиций — не показываем 0
@@ -167,7 +168,7 @@ async def dashboard_view(context: AppContext, *, period: str = "session") -> dic
 async def _positions(context: AppContext) -> list[Any]:
     try:
         return await asyncio.wait_for(context.broker.get_open_positions(), timeout=0.5)
-    except (TimeoutError, OSError):
+    except Exception:  # noqa: BLE001
         return []
 
 

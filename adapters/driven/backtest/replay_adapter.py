@@ -169,11 +169,19 @@ class BacktestReplayAdapter:
         raise NotImplementedError(msg)
 
     async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
-        msg = (
-            "resolve_instrument недоступен в бэктесте: "
-            "инструменты задаются явно при сборке контекста"
+        from config.catalog import find_catalog_instrument
+
+        found = find_catalog_instrument(ticker, class_code)
+        if found is not None:
+            return found
+        return Instrument(
+            uid=f"backtest-{ticker.lower()}",
+            ticker=ticker.upper(),
+            class_code=class_code.upper(),
+            lot_size=10,
+            is_benchmark=(ticker.upper() == "IMOEX"),
+            currency="RUB",
         )
-        raise NotImplementedError(msg)
 
     def set_clock(self, clock: Any) -> None:
         self._clock = clock

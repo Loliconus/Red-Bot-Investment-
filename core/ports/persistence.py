@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
-from core.domain.entities import Instrument, StrategyConfig, TradePlan
+from core.domain.entities import Instrument, PortfolioState, StrategyConfig, TradePlan
 from core.journal.hypothesis_engine import Hypothesis
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
 from core.journal.trade_review import TradeReview
@@ -84,9 +84,13 @@ class RepositoryPort(Protocol):
 
     async def save_instrument(self, instrument: Instrument) -> None: ...
 
+    async def delete_instrument(self, uid: str) -> None: ...
+
     async def list_instruments(self) -> list[Instrument]: ...
 
     async def save_portfolio_state(self, state_json: str) -> None: ...
+
+    async def get_latest_portfolio_state(self) -> PortfolioState | None: ...
 
     async def get_market_snapshot(self, snapshot_id: UUID) -> MarketSnapshot | None: ...
 

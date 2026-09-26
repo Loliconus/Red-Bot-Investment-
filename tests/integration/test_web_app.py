@@ -303,3 +303,59 @@ async def test_trades_endpoint_empty_history(client: Any) -> None:
     response = client.get("/api/journal/trades?since_days=1", headers={"X-Red-Bot-Token": token})
     assert response.status_code == 200
     assert response.json() == []
+
+
+async def test_instruments_add_and_delete_endpoints(client: Any, context: AppContext) -> None:
+    token = _login(client)
+    headers = {"X-Red-Bot-Token": token}
+
+    # Добавление инструмента через форму
+    resp = client.post(
+        "/instruments/add", data={"ticker": "VTBR", "class_code": "TQBR"}, headers=headers
+    )
+    assert resp.status_code == 200
+    assert "VTBR" in resp.text
+    assert "успешно добавлен" in resp.text
+
+    # Повторное добавление возвращает понятную ошибку без 500
+    resp_dup = client.post(
+        "/instruments/add", data={"ticker": "VTBR", "class_code": "TQBR"}, headers=headers
+    )
+    assert resp_dup.status_code == 200
+    assert "уже добавлен" in resp_dup.text
+
+    # Каталог API
+    resp_cat = client.get("/api/instruments/catalog", headers=headers)
+    assert resp_cat.status_code == 200
+    assert any(item["ticker"] == "VTBR" for item in resp_cat.json())
+
+    # Удаление инструмента
+    added_inst = next((i for i in context.instruments if i.ticker == "VTBR"), None)
+    assert added_inst is not None
+    resp_del = client.post(f"/instruments/{added_inst.uid}/delete", headers=headers)
+    assert resp_del.status_code == 200
+    assert "удалён из корзины" in resp_del.text
+
+
+async def test_sandbox_account_web_endpoints(client: Any, context: AppContext) -> None:
+    token = _login(client)
+    headers = {"X-Red-Bot-Token": token}
+
+    # Пополнение счёта
+    resp_topup = client.post(
+        "/risk/account/sandbox/topup", data={"amount": "300000"}, headers=headers
+    )
+    assert resp_topup.status_code == 200
+    assert "пополнен" in resp_topup.text
+
+    # Создание счёта
+    resp_create = client.post(
+        "/risk/account/sandbox/create", data={"name": "Новый счёт"}, headers=headers
+    )
+    assert resp_create.status_code == 200
+    assert "Создан новый счёт" in resp_create.text
+
+    # Обновление
+    resp_ref = client.post("/risk/account/sandbox/refresh", headers=headers)
+    assert resp_ref.status_code == 200
+    assert "обновлены" in resp_ref.text

@@ -6,6 +6,9 @@ import asyncio
 from datetime import timedelta
 from decimal import Decimal
 
+import pytest
+
+from application.composition import AppContext
 from application.events import EventBus
 from application.kill_switch import KillSwitch
 from application.use_cases.archive_old_data import archive_old_data
@@ -326,3 +329,82 @@ async def test_event_bus_isolates_handler_errors() -> None:
     await bus.publish("событие")
     assert handled == ["ok"]
     assert bus.subscribers_count(str) == 2
+
+
+async def test_manage_instruments_add_and_remove(context: AppContext) -> None:
+    from application.use_cases.manage_instruments import (
+        add_instrument,
+        list_instrument_views,
+        remove_instrument,
+    )
+
+    # Добавляем по тикеру
+    inst = await add_instrument(context, "VTBR", "TQBR")
+    assert inst.ticker == "VTBR"
+    assert inst.lot_size == 10000
+    assert inst.uid in [i["uid"] for i in await list_instrument_views(context)]
+
+    # Удаляем
+    await remove_instrument(context, inst.uid)
+    assert inst.uid not in [i["uid"] for i in await list_instrument_views(context)]
+
+
+async def test_manage_instruments_add_by_company_name(context: AppContext) -> None:
+    from application.use_cases.manage_instruments import add_instrument
+
+    inst = await add_instrument(context, "Газпром (GAZP)", "TQBR")
+    assert inst.ticker == "GAZP"
+    assert inst.lot_size == 10
+
+
+async def test_manage_instruments_prevents_removing_benchmark(context: AppContext) -> None:
+    from application.use_cases.bootstrap_database import seed_instrument
+    from application.use_cases.manage_instruments import remove_instrument
+
+    imoex = seed_instrument("uid-imoex", "IMOEX", 1, is_benchmark=True)
+    await context.repository.save_instrument(imoex)
+    context.instruments.append(imoex)
+
+    with pytest.raises(ValueError, match="бенчмарк"):
+        await remove_instrument(context, imoex.uid)
+
+
+async def test_manage_account_sandbox_operations(context: AppContext) -> None:
+    from application.use_cases.manage_account import (
+        close_sandbox_account,
+        create_sandbox_account,
+        get_account_overview,
+        refresh_portfolio,
+        switch_sandbox_account,
+        topup_sandbox,
+    )
+    from config.enums import ExecutionMode
+
+    context.mode = ExecutionMode.SANDBOX
+    overview = await get_account_overview(context)
+    assert overview["account_id"]
+    assert overview["is_sandbox"]
+
+    # Пополнение
+    new_bal = await topup_sandbox(context, Decimal("250000"))
+    assert new_bal >= Decimal("250000")
+    assert context.portfolio is not None
+    assert context.portfolio.total_value == new_bal
+
+    # Создание счёта в песочнице
+    new_acc = await create_sandbox_account(context, "Второй счёт")
+    assert new_acc
+    assert context.active_account_id == new_acc
+
+    # Переключение счетов
+    await switch_sandbox_account(context, overview["account_id"])
+    assert context.active_account_id == overview["account_id"]
+
+    # Закрытие счёта
+    await close_sandbox_account(context, new_acc)
+    updated_overview = await get_account_overview(context)
+    assert new_acc not in [a["id"] for a in updated_overview["accounts"]]
+
+    # Обновление
+    p = await refresh_portfolio(context)
+    assert p.total_value > Decimal("0")

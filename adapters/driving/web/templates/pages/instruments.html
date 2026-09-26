@@ -1,5 +1,179 @@
 {% extends 'base.html' %}
 {% block content %}
-<section class="page-heading"><div><div class="eyebrow">04 / КОНФИГУРАЦИЯ КОРЗИНЫ <span class="eyebrow-line"></span> ПРИОРИТЕТ P2</div><h1>Инструменты и ТА</h1><p>Торгуйте 2–5 инструментами. IMOEX используется только как справочный бенчмарк.</p></div><span class="heading-meta">{{ instruments|length }} В СПРАВОЧНИКЕ</span></section>
-<div class="two-column instruments-layout"><section class="panel instruments-table-panel"><div class="panel-head"><div><div class="eyebrow">ТОРГОВАЯ КОРЗИНА</div><h2>Инструменты</h2></div><span class="pill neutral">2 — 5 АКТИВНЫХ</span></div><div id="instrument-table">{% include 'partials/instrument_table.html' %}</div><form hx-post="/instruments/add" hx-target="#instrument-table" class="instrument-form"><label>Тикер<input type="text" name="ticker" list="ticker-options" placeholder="SBER" required maxlength="15" autocomplete="off"><datalist id="ticker-options">{% for item in instruments %}<option value="{{ item.ticker }}">{{ item.class_code }}</option>{% endfor %}</datalist></label><label>Класс<input type="text" name="class_code" value="TQBR" required maxlength="15"></label><button type="submit" class="button primary">+ Добавить</button></form><p class="panel-note">Распознавание тикера выполняет брокерский MarketDataPort; лимит контролируется сервером. Автодополнение сейчас показывает инструменты уже в корзине.</p></section><section class="panel ta-panel"><div class="panel-head"><div><div class="eyebrow">МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ</div><h2>Параметры ТА</h2></div><span class="pill neutral">1D / 1H / 1m</span></div><p class="panel-copy">Индикаторы API (SMA / EMA / RSI / MACD / Bollinger) и локальные индикаторы (ATR / Fibonacci / VWAP / OBV) разделены по таймфреймам.</p><div class="tf-overview"><div><span>1D</span><strong>Контекст</strong><small>Тренд, SMA/EMA, ATR</small></div><div><span>1H</span><strong>Сетап</strong><small>RSI, MACD, Bollinger</small></div><div><span>1m</span><strong>Тайминг</strong><small>VWAP, OBV, стакан</small></div></div><div class="inline-alert warning">Версионирование параметров ТА пока не подключено к RepositoryPort. Редактирование отключено: изменение только визуального значения без влияния на стратегию было бы опасным.</div></section></div>
+<section class="page-heading">
+  <div>
+    <div class="eyebrow">04 / КОНФИГУРАЦИЯ КОРЗИНЫ <span class="eyebrow-line"></span> ПРИОРИТЕТ P2</div>
+    <h1>Инструменты и ТА</h1>
+    <p>Управление рабочей корзиной (2–5 активных инструментов). IMOEX используется как справочный бенчмарк.</p>
+  </div>
+  <span class="heading-meta">{{ instruments|length }} В КОРЗИНЕ</span>
+</section>
+
+<div class="two-column instruments-layout">
+  <!-- Панель управления инструментами -->
+  <section class="panel instruments-table-panel">
+    <div class="panel-head">
+      <div>
+        <div class="eyebrow">ТОРГОВАЯ КОРЗИНА</div>
+        <h2>Инструменты корзины</h2>
+      </div>
+      <span class="pill neutral">2 — 5 АКТИВНЫХ</span>
+    </div>
+
+    <div id="instrument-table">
+      {% include 'partials/instrument_table.html' %}
+    </div>
+
+    <!-- Быстрый выбор популярных акций Мосбиржи -->
+    <div style="padding: 16px 20px 0;">
+      <div class="eyebrow" style="margin-bottom: 8px;">БЫСТРЫЙ ВЫБОР ИЗ ТОП-АКЦИЙ МОСБИРЖИ:</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('SBER', 'TQBR')">Сбербанк (SBER)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('GAZP', 'TQBR')">Газпром (GAZP)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('VTBR', 'TQBR')">ВТБ (VTBR)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('LKOH', 'TQBR')">ЛУКОЙЛ (LKOH)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('YNDX', 'TQBR')">Яндекс (YNDX)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('ROSN', 'TQBR')">Роснефть (ROSN)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('NVTK', 'TQBR')">НОВАТЭК (NVTK)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('GMKN', 'TQBR')">Норникель (GMKN)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('TATN', 'TQBR')">Татнефть (TATN)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('MGNT', 'TQBR')">Магнит (MGNT)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('MOEX', 'TQBR')">Мосбиржа (MOEX)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('CHMF', 'TQBR')">Северсталь (CHMF)</button>
+        <button type="button" class="button small secondary" onclick="selectQuickTicker('T', 'TQBR')">Т-Технологии (T)</button>
+      </div>
+
+      <!-- Выпадающий список всех акций из каталога -->
+      <div style="margin-bottom: 14px;">
+        <label style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">
+          Или выберите акцию из полного каталога (40+ бумаг):
+        </label>
+        <select id="catalog-picker" onchange="if(this.value){ selectQuickTicker(this.value, 'TQBR'); }" style="width: 100%; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--text);">
+          <option value="">-- Выберите компанию из списка --</option>
+          {% for cat in catalog|default([]) %}
+            <option value="{{ cat.ticker }}">{{ cat.name }} ({{ cat.ticker }}, лот {{ cat.lot_size }} шт., {{ cat.class_code }})</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <!-- Форма добавления инструмента -->
+    <form hx-post="/instruments/add" hx-target="#instrument-table" class="instrument-form" style="padding-top: 4px;">
+      <label>
+        Тикер или название
+        <input type="text" id="instrument-ticker-input" name="ticker" list="ticker-options" placeholder="SBER или Сбербанк" required maxlength="64" autocomplete="off">
+        <datalist id="ticker-options">
+          {% for cat in catalog|default([]) %}
+            <option value="{{ cat.ticker }}">{{ cat.name }} ({{ cat.class_code }})</option>
+          {% endfor %}
+        </datalist>
+      </label>
+      <label>
+        Класс
+        <input type="text" id="instrument-class-input" name="class_code" value="TQBR" required maxlength="15">
+      </label>
+      <button type="submit" class="button primary">+ Добавить</button>
+    </form>
+
+    <p class="panel-note">
+      Вы можете ввести тикер (VTBR, GAZP), русское название компании (Сбербанк, Яндекс) либо кликнуть на нужную бумагу выше. Параметры лотности и UID разрешаются автоматически через API брокера или каталог Мосбиржи.
+    </p>
+  </section>
+
+  <!-- Правая колонка: параметры ТА и информация о хранилище -->
+  <div style="display: flex; flex-direction: column; gap: 20px;">
+    <!-- Параметры ТА -->
+    <section class="panel ta-panel">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow">МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ</div>
+          <h2>Параметры ТА</h2>
+        </div>
+        <span class="pill neutral">1D / 1H / 1m</span>
+      </div>
+      <p class="panel-copy">
+        Индикаторы API (SMA / EMA / RSI / MACD / Bollinger) и локальные индикаторы (ATR / Fibonacci / VWAP / OBV) разделены по таймфреймам.
+      </p>
+      <div class="tf-overview">
+        <div><span>1D</span><strong>Контекст</strong><small>Тренд, SMA/EMA, ATR</small></div>
+        <div><span>1H</span><strong>Сетап</strong><small>RSI, MACD, Bollinger</small></div>
+        <div><span>1m</span><strong>Тайминг</strong><small>VWAP, OBV, стакан</small></div>
+      </div>
+      <div class="inline-alert warning">
+        Версионирование параметров ТА подключено к <code>strategy_configs</code> в DuckDB. Риск-настройки и веса конфлюенса редактируются в разделе <a href="/risk">Риск-модуль ↗</a>.
+      </div>
+    </section>
+
+    <!-- Информация о хранении настроек и данных ПО -->
+    <section class="panel storage-info-panel">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow">СТРУКТУРА ХРАНИЛИЩА ПРОЕКТА</div>
+          <h2>📁 Где хранятся настройки и данные</h2>
+        </div>
+        <span class="pill neutral">ДИРЕКТОРИЯ</span>
+      </div>
+      <p class="panel-copy" style="font-size: 11px; margin-bottom: 12px;">
+        Все параметры системы, учётные данные, исторические ряды и операционное состояние хранятся в следующих местах:
+      </p>
+      <div style="display: flex; flex-direction: column; gap: 10px; font-size: 11px;">
+        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
+          <strong style="color: var(--accent);">🔑 Токены и секреты API</strong>
+          <div style="color: var(--muted); margin-top: 3px;">
+            • Системное защищённое хранилище ОС: <code>keyring</code> (сервис <code>red-bot</code>, ключ <code>tbank_api_token</code>).<br>
+            • Конфигурационный файл окружения: <code>.env</code> (переменная <code>REDBOT__TBANK__API_TOKEN</code>, пример в <code>config/.env.example</code>).
+          </div>
+        </div>
+
+        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
+          <strong style="color: var(--accent);">📊 Инструменты, FIGI / UID и корзина</strong>
+          <div style="color: var(--muted); margin-top: 3px;">
+            • База данных DuckDB: <code>data/redbot.duckdb</code> (таблица <code>instruments</code>: поля <code>uid</code>, <code>ticker</code>, <code>class_code</code>, <code>lot_size</code>, <code>currency</code>).<br>
+            • Флаги активности: таблица <code>operational_state</code> (ключи <code>instrument:&lt;uid&gt;:enabled</code>).<br>
+            • Справочный каталог Мосбиржи и дефолты: <code>config/catalog.py</code> и <code>config/seed_defaults.py</code>.
+          </div>
+        </div>
+
+        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
+          <strong style="color: var(--accent);">⚙️ Настройки индикаторов и риск-модели</strong>
+          <div style="color: var(--muted); margin-top: 3px;">
+            • База DuckDB: <code>data/redbot.duckdb</code> (таблица <code>strategy_configs</code> — версии конфигураций, веса конфлюенса, риск на сделку, множители целей).<br>
+            • Начальные параметры индикаторов ТА: <code>config/seed_defaults.py</code> (константа <code>DEFAULT_TA_PARAMS</code>).
+          </div>
+        </div>
+
+        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
+          <strong style="color: var(--accent);">💳 Счёт и контур исполнения</strong>
+          <div style="color: var(--muted); margin-top: 3px;">
+            • Активный счёт: таблица <code>operational_state</code> (ключ <code>managed_account_id</code>) в <code>data/redbot.duckdb</code>.<br>
+            • Контур запуска (SANDBOX / LIVE / BACKTEST): <code>.env</code> (параметр <code>REDBOT__EXECUTION_MODE</code>).
+          </div>
+        </div>
+
+        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
+          <strong style="color: var(--accent);">📦 Рыночные данные и архивы</strong>
+          <div style="color: var(--muted); margin-top: 3px;">
+            • Оперативные свечи и стаканы (Hot-слой): <code>data/redbot.duckdb</code> (таблицы <code>candles</code>, <code>orderbooks</code>, <code>trades</code>, <code>positions</code>).<br>
+            • Паркетный холодный архив (Cold-слой): директория <code>data/archive/</code>.<br>
+            • TLS-сертификат доверия Минцифры РФ: <code>config/certs/russian_trusted_ca.pem</code>.
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+function selectQuickTicker(ticker, classCode) {
+  var input = document.getElementById('instrument-ticker-input');
+  var clsInput = document.getElementById('instrument-class-input');
+  if (input) {
+    input.value = ticker;
+    input.focus();
+  }
+  if (clsInput && classCode) {
+    clsInput.value = classCode;
+  }
+}
+</script>
 {% endblock %}

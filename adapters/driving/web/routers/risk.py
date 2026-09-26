@@ -1,4 +1,4 @@
-"""Риск-панель: hard stop без DOM-переключателя, счёт меняется в 3 шага."""
+"""Риск-панель: управление риском, счетами и администрирование счетов песочницы."""
 
 from __future__ import annotations
 
@@ -13,6 +13,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from adapters.driving.web.dependencies import ContextDep, SessionDep, require_session
 from adapters.driving.web.render import render_page, render_partial
 from adapters.driving.web.security.session import get_session_manager
+from application.use_cases.manage_account import (
+    close_sandbox_account,
+    create_sandbox_account,
+    get_account_overview,
+    refresh_portfolio,
+    switch_sandbox_account,
+    topup_sandbox,
+)
 from application.use_cases.manage_risk import (
     COUNTERTREND_PHRASE,
     change_managed_account,
@@ -50,12 +58,16 @@ class RiskResponse(BaseModel):
 
 @router.get("/risk")
 async def page(request: Request, context: ContextDep) -> Any:
+    account_overview = await get_account_overview(context)
     return render_page(
         request,
         "pages/risk.html",
         title="Риск-модуль",
         section="risk",
-        data={"risk": get_risk_state(context)},
+        data={
+            "risk": get_risk_state(context),
+            "account": account_overview,
+        },
     )
 
 
@@ -153,6 +165,144 @@ async def reveal_account(
     )
 
 
+# ------------------------------------------------------------- Sandbox Administration
+@router.post("/risk/account/sandbox/topup")
+async def sandbox_topup_endpoint(
+    request: Request,
+    context: ContextDep,
+    _session: SessionDep,
+    amount: str = Form(...),
+) -> Any:
+    try:
+        clean_amount = amount.replace(" ", "").replace(",", ".")
+        dec_amount = Decimal(clean_amount)
+        await topup_sandbox(context, dec_amount)
+        message = f"Счёт успешно пополнен на {dec_amount:,.0f} ₽".replace(",", " ")
+        error = ""
+    except Exception as exc:  # noqa: BLE001
+        message, error = "", str(exc)
+
+    account_overview = await get_account_overview(context)
+    return render_partial(
+        request,
+        "partials/sandbox_account.html",
+        {
+            "account": account_overview,
+            "risk": get_risk_state(context),
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@router.post("/risk/account/sandbox/create")
+async def sandbox_create_endpoint(
+    request: Request,
+    context: ContextDep,
+    _session: SessionDep,
+    name: str = Form(default="Red-Bot Sandbox"),
+) -> Any:
+    try:
+        new_id = await create_sandbox_account(context, name)
+        message = f"Создан новый счёт {new_id} с балансом 1 000 000 ₽ и назначен активным."
+        error = ""
+    except Exception as exc:  # noqa: BLE001
+        message, error = "", str(exc)
+
+    account_overview = await get_account_overview(context)
+    return render_partial(
+        request,
+        "partials/sandbox_account.html",
+        {
+            "account": account_overview,
+            "risk": get_risk_state(context),
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@router.post("/risk/account/sandbox/switch")
+async def sandbox_switch_endpoint(
+    request: Request,
+    context: ContextDep,
+    _session: SessionDep,
+    account_id: str = Form(...),
+) -> Any:
+    try:
+        await switch_sandbox_account(context, account_id)
+        message = f"Активный счёт переключён на {account_id}."
+        error = ""
+    except Exception as exc:  # noqa: BLE001
+        message, error = "", str(exc)
+
+    account_overview = await get_account_overview(context)
+    return render_partial(
+        request,
+        "partials/sandbox_account.html",
+        {
+            "account": account_overview,
+            "risk": get_risk_state(context),
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@router.post("/risk/account/sandbox/close")
+async def sandbox_close_endpoint(
+    request: Request,
+    context: ContextDep,
+    _session: SessionDep,
+    account_id: str = Form(...),
+) -> Any:
+    try:
+        await close_sandbox_account(context, account_id)
+        message = f"Счёт {account_id} закрыт."
+        error = ""
+    except Exception as exc:  # noqa: BLE001
+        message, error = "", str(exc)
+
+    account_overview = await get_account_overview(context)
+    return render_partial(
+        request,
+        "partials/sandbox_account.html",
+        {
+            "account": account_overview,
+            "risk": get_risk_state(context),
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@router.post("/risk/account/sandbox/refresh")
+async def sandbox_refresh_endpoint(
+    request: Request,
+    context: ContextDep,
+    _session: SessionDep,
+) -> Any:
+    try:
+        await refresh_portfolio(context)
+        message = "Баланс и портфель обновлены."
+        error = ""
+    except Exception as exc:  # noqa: BLE001
+        message, error = "", str(exc)
+
+    account_overview = await get_account_overview(context)
+    return render_partial(
+        request,
+        "partials/sandbox_account.html",
+        {
+            "account": account_overview,
+            "risk": get_risk_state(context),
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+# ------------------------------------------------------------- Live Staged Account Change
 @router.post("/risk/account/step/1")
 async def account_step1(request: Request, context: ContextDep, _session: SessionDep) -> Any:
     get_session_manager(request).begin_account_change(_session)

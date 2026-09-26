@@ -162,22 +162,37 @@ class TBankMarketDataAdapter:
 
     async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
         """Однозначно находит инструмент по тикеру и класс-коду."""
-        from t_tech.invest.grpc.schemas import InstrumentIdType, InstrumentRequest
+        from config.catalog import find_catalog_instrument
 
-        request = InstrumentRequest(
-            id=f"{ticker}_{class_code}",
-            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-            class_code=class_code,
-        )
-        response = await retry_read(
-            lambda: self._channel.services.instruments.get_instrument_by(request=request),
-            operation_name="resolve_instrument",
-        )
-        instrument = response.instrument
-        if not instrument:
-            msg = f"Инструмент {ticker}.{class_code} не найден"
-            raise ValueError(msg)
-        return instrument_to_domain(instrument)
+        try:
+            from t_tech.invest.grpc.schemas import InstrumentIdType, InstrumentRequest
+
+            request = InstrumentRequest(
+                id=ticker,
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+                class_code=class_code,
+            )
+            response = await retry_read(
+                lambda: self._channel.services.instruments.get_instrument_by(request=request),
+                operation_name="resolve_instrument",
+            )
+            instrument = getattr(response, "instrument", None)
+            if instrument:
+                return instrument_to_domain(instrument)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "resolve_instrument_remote_failed",
+                ticker=ticker,
+                class_code=class_code,
+                error=str(exc),
+            )
+
+        catalog_match = find_catalog_instrument(ticker, class_code)
+        if catalog_match is not None:
+            return catalog_match
+
+        msg = f"Инструмент {ticker}.{class_code} не найден ни в API, ни в каталоге Мосбиржи"
+        raise ValueError(msg)
 
     async def aclose(self) -> None:
         await self._channel.aclose()

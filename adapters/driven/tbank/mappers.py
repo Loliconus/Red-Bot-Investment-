@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from core.domain.entities import Instrument, OrderResult, OrderState, Position
+from core.domain.entities import Instrument, OrderResult, OrderState, PortfolioState, Position
 from core.domain.enums import OrderSide, OrderStatus, Timeframe
 from core.domain.value_objects import OHLCV, OrderbookLevel, OrderbookSnapshot
 
@@ -202,3 +202,19 @@ def order_direction(side: OrderSide) -> int:
         return 1
     msg = f"Неподдерживаемое направление: {side}"
     raise ValueError(msg)
+
+
+def portfolio_response_to_domain(response: Any, *, account_id: str) -> PortfolioState:
+    """``PortfolioResponse`` → ``PortfolioState``."""
+    total_val = money_value_to_decimal(getattr(response, "total_amount_portfolio", None))
+    avail_cash = money_value_to_decimal(getattr(response, "total_amount_currencies", None))
+    pos_val = money_value_to_decimal(getattr(response, "total_amount_shares", None))
+    if total_val == ZERO and avail_cash > ZERO:
+        total_val = avail_cash + pos_val
+    return PortfolioState(
+        account_id=account_id,
+        total_value=total_val,
+        available_cash=avail_cash,
+        positions_value=pos_val,
+        updated_at=datetime.now(tz=UTC),
+    )

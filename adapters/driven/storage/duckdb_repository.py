@@ -586,6 +586,9 @@ class DuckDBRepository:
             ],
         )
 
+    async def delete_instrument(self, uid: str) -> None:
+        await self._arun("DELETE FROM instruments WHERE uid = ?", [uid])
+
     async def list_instruments(self) -> list[Instrument]:
         rows = await self._arun(
             "SELECT uid, ticker, class_code, lot_size, is_benchmark, currency "

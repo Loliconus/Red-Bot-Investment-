@@ -194,6 +194,19 @@ async def build_context(
 
     if mode is ExecutionMode.BACKTEST:
         market_data, broker = build_backtest_adapters(settings)
+    elif mode is ExecutionMode.SANDBOX:
+        try:
+            from adapters.driven.sandbox.sandbox_adapter import create_sandbox_adapters
+
+            market_data, broker = await create_sandbox_adapters(
+                settings, managed_account_id=active_account_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "sandbox_adapters_creation_failed_fallback_simulated",
+                error=str(exc),
+            )
+            market_data, broker = build_backtest_adapters(settings)
     else:
         market_data, broker = await build_tbank_adapters(
             settings, managed_account_id=active_account_id
@@ -213,6 +226,42 @@ async def build_context(
     stored_instruments = instruments or await repository.list_instruments()
     benchmark = next((i for i in stored_instruments if i.is_benchmark), None)
 
+    initial_portfolio: PortfolioState | None = None
+    if hasattr(broker, "get_portfolio"):
+        try:
+            initial_portfolio = await broker.get_portfolio()
+        except Exception:  # noqa: BLE001
+            initial_portfolio = None
+    if initial_portfolio is None:
+        try:
+            initial_portfolio = await repository.get_latest_portfolio_state()
+        except Exception:  # noqa: BLE001
+            initial_portfolio = None
+    if initial_portfolio is None and mode in (ExecutionMode.SANDBOX, ExecutionMode.BACKTEST):
+        import json
+
+        initial_portfolio = PortfolioState(
+            account_id=active_account_id or "sandbox-01",
+            total_value=Decimal("1000000"),
+            available_cash=Decimal("1000000"),
+            positions_value=Decimal("0"),
+            updated_at=clock.now(),
+        )
+        try:
+            await repository.save_portfolio_state(
+                json.dumps(
+                    {
+                        "account_id": initial_portfolio.account_id,
+                        "total_value": str(initial_portfolio.total_value),
+                        "available_cash": str(initial_portfolio.available_cash),
+                        "positions_value": str(initial_portfolio.positions_value),
+                        "updated_at": initial_portfolio.updated_at.isoformat(),
+                    }
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("save_initial_portfolio_failed", error=str(exc))
+
     ctx = AppContext(
         settings=settings,
         market_data=market_data,
@@ -225,6 +274,7 @@ async def build_context(
         config=active_config,
         instruments=stored_instruments,
         benchmark=benchmark,
+        portfolio=initial_portfolio,
         kill_switch=kill_switch,
         started_at=clock.now(),
         mode=mode,
