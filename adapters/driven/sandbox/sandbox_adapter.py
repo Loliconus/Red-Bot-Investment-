@@ -13,27 +13,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
 from adapters.driven.tbank.broker_adapter import TBankBrokerAdapter, retry_read_safe
 from adapters.driven.tbank.grpc_client import TInvestChannel
-from adapters.driven.tbank.mappers import (
-    NANO,
-    money_value_to_decimal,
-    portfolio_response_to_domain,
-)
+from adapters.driven.tbank.mappers import money_value_to_decimal
 from adapters.driven.tbank.market_data_adapter import TBankMarketDataAdapter
-from adapters.driven.tbank.retry import retry_async
-from adapters.driven.tbank.tls import create_ssl_channel_credentials, resolve_ca_path
+from adapters.driven.tbank.tls import configure_sdk_tls
 from config.settings import Settings
-from core.domain.entities import PortfolioState, Position
-
-if TYPE_CHECKING:
-    pass
 
 logger = structlog.get_logger(__name__)
 
@@ -44,24 +34,16 @@ class SandboxChannel(TInvestChannel):
     @classmethod
     async def create(cls, settings: Settings) -> SandboxChannel:
         sandbox_client = _import_async_sandbox_client()
-        ca_path = resolve_ca_path(settings.tbank.ca_bundle_path)
-        credentials = create_ssl_channel_credentials(
-            ca_path, insecure_dev_only=settings.tbank.insecure_tls_dev_only
-        )
+        configure_sdk_tls()
 
         channel = cls(
             target=settings.tbank.grpc_target_sandbox,
             token=settings.tbank.api_token.get_secret_value(),
-            ca_path=ca_path,
         )
-        client = sandbox_client(
-            token=channel._token,
-            target=settings.tbank.grpc_target_sandbox,
-            channel_credentials=credentials,
-        )
-        services = await client.__aenter__()
-        channel._client = client
-        channel._services = services
+        # SDK сам фиксирует официальный sandbox target; channel_credentials не
+        # является поддерживаемым аргументом его клиента.
+        client = sandbox_client(token=channel._token, app_name="red-bot")
+        await channel._enter_client(client)
         logger.info("sandbox_channel_created", target=channel._target)
         return channel
 
@@ -84,127 +66,83 @@ class SandboxMarketDataAdapter(TBankMarketDataAdapter):
 
 
 class SandboxBrokerAdapter(TBankBrokerAdapter):
-    """Исполнение в песочнице. Заявки и счета обслуживаются через services.sandbox."""
+    """Торговля идет через обычные services.orders/operations на sandbox target.
 
-    @property
-    def _orders(self) -> Any:
-        # В песочнице T-Invest операции выставления ордеров принадлежат сервису sandbox
-        return self._channel.services.sandbox
+    Только управление тестовыми счетами и пополнение используют SandboxService.
+    """
 
     async def get_sandbox_accounts(self) -> list[dict[str, Any]]:
-        """Возвращает список всех счетов пользователя в песочнице."""
+        """Запрашивает счета реального sandbox API; ошибки подключения не маскируются."""
         from t_tech.invest.grpc.schemas import GetAccountsRequest
 
-        try:
-            response = await retry_read_safe(
-                lambda: self._channel.services.sandbox.get_sandbox_accounts(
-                    request=GetAccountsRequest()
-                )
+        response = await retry_read_safe(
+            lambda: self._channel.services.sandbox.get_sandbox_accounts(
+                request=GetAccountsRequest()
             )
-            accounts: list[dict[str, Any]] = []
-            for acc in getattr(response, "accounts", []) or []:
-                accounts.append(
-                    {
-                        "id": str(acc.id),
-                        "name": str(getattr(acc, "name", "") or "Песочница"),
-                        "status": int(getattr(acc, "status", 1)),
-                        "type": int(getattr(acc, "type", 1)),
-                        "is_current": str(acc.id) == self._account_id,
-                    }
-                )
-            return accounts
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("get_sandbox_accounts_failed", error=str(exc))
-            return []
+        )
+        return [
+            {
+                "id": str(acc.id),
+                "name": str(getattr(acc, "name", "") or "Песочница"),
+                "status": int(getattr(acc, "status", 1)),
+                "type": int(getattr(acc, "type", 1)),
+                "is_current": str(acc.id) == self._account_id,
+            }
+            for acc in getattr(response, "accounts", []) or []
+        ]
+
+    async def ensure_managed_sandbox_account(self) -> str:
+        """Выбирает существующий счёт или открывает настоящий sandbox-счёт."""
+        accounts = await self.get_sandbox_accounts()
+        if self._account_id:
+            if not any(account["id"] == self._account_id for account in accounts):
+                raise ValueError("Настроенный sandbox account_id отсутствует среди счетов API")
+            return self._account_id
+        if accounts:
+            self._account_id = str(accounts[0]["id"])
+        else:
+            self._account_id = await self.open_sandbox_account()
+        return self._account_id
 
     async def open_sandbox_account(self, name: str = "Red-Bot Sandbox") -> str:
-        """Создаёт счёт в песочнице."""
+        """Создаёт счёт через SandboxService. Запрос не поддерживает идемпотентность."""
         from t_tech.invest.grpc.schemas import OpenSandboxAccountRequest
 
-        try:
-            request = OpenSandboxAccountRequest(name=name)
-        except TypeError:
-            request = OpenSandboxAccountRequest()
-
-        response = await retry_async(
-            lambda: self._channel.services.sandbox.open_sandbox_account(request=request),
-            idempotency_key=f"open-{int(datetime.now(tz=UTC).timestamp())}",
-            operation_name="open_sandbox_account",
+        response = await self._channel.services.sandbox.open_sandbox_account(
+            request=OpenSandboxAccountRequest(name=name)
         )
         account_id = str(response.account_id)
-        logger.info("sandbox_account_opened", account_id=account_id)
+        if not account_id:
+            raise RuntimeError("SandboxService вернул пустой account_id")
+        logger.info("sandbox_account_opened")
         return account_id
 
     async def close_sandbox_account(self, account_id: str) -> None:
-        """Закрывает указанный счёт в песочнице."""
+        """Закрывает счёт в sandbox API ровно одним запросом."""
         from t_tech.invest.grpc.schemas import CloseSandboxAccountRequest
 
         request = CloseSandboxAccountRequest(account_id=account_id)
-        await retry_async(
-            lambda: self._channel.services.sandbox.close_sandbox_account(request=request),
-            idempotency_key=f"close-{account_id}",
-            operation_name="close_sandbox_account",
-        )
-        logger.info("sandbox_account_closed", account_id=account_id)
+        await self._channel.services.sandbox.close_sandbox_account(request=request)
+        logger.info("sandbox_account_closed")
 
     async def sandbox_pay_in(
         self, account_id: str, amount: Decimal, currency: str = "rub"
     ) -> Decimal:
-        """Пополняет баланс виртуального счёта в песочнице."""
-        from t_tech.invest.grpc.schemas import MoneyValue, SandboxPayInRequest
+        """Пополняет sandbox API без повторов: у SandboxPayIn нет idempotency key."""
+        from t_tech.invest.grpc.schemas import SandboxPayInRequest
+        from t_tech.invest.utils import decimal_to_money
 
-        units = int(amount)
-        nano = int((amount - Decimal(units)) * NANO)
+        if amount <= 0:
+            raise ValueError("Сумма пополнения должна быть больше нуля")
+        self._assert_managed_account(account_id)
         request = SandboxPayInRequest(
             account_id=account_id,
-            amount=MoneyValue(currency=currency, units=units, nano=nano),
+            amount=decimal_to_money(amount, currency),
         )
-        response = await retry_async(
-            lambda: self._channel.services.sandbox.sandbox_pay_in(request=request),
-            idempotency_key=f"payin-{account_id}-{int(datetime.now(tz=UTC).timestamp())}",
-            operation_name="sandbox_pay_in",
-        )
-        bal = money_value_to_decimal(getattr(response, "balance", None))
-        logger.info("sandbox_pay_in_completed", account_id=account_id, balance=str(bal))
-        return bal
-
-    async def get_portfolio(self) -> PortfolioState | None:
-        """Портфель счёта в песочнице."""
-        from t_tech.invest.grpc.schemas import PortfolioRequest
-
-        if not self._account_id:
-            return None
-        self._assert_managed_account(self._account_id)
-        request = PortfolioRequest(account_id=self._account_id)
-        try:
-            response = await retry_read_safe(
-                lambda: self._channel.services.sandbox.get_sandbox_portfolio(request=request)
-            )
-            return portfolio_response_to_domain(response, account_id=self._account_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "sandbox_portfolio_lookup_failed", account_id=self._account_id, error=str(exc)
-            )
-            return None
-
-    async def get_open_positions(self) -> list[Position]:
-        """Открытые позиции в песочнице."""
-        from t_tech.invest.grpc.schemas import PositionsRequest
-
-        if not self._account_id:
-            return []
-        self._assert_managed_account(self._account_id)
-        request = PositionsRequest(account_id=self._account_id)
-        try:
-            response = await retry_read_safe(
-                lambda: self._channel.services.sandbox.get_sandbox_positions(request=request)
-            )
-            return await self._positions_from_response(response)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "sandbox_positions_lookup_failed", account_id=self._account_id, error=str(exc)
-            )
-            return []
+        response = await self._channel.services.sandbox.sandbox_pay_in(request=request)
+        balance = money_value_to_decimal(getattr(response, "balance", None))
+        logger.info("sandbox_pay_in_completed", balance=str(balance))
+        return balance
 
 
 async def create_sandbox_adapters(

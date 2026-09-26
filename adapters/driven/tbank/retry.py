@@ -4,11 +4,10 @@
 без ключа идемпотентности при таймауте соединения — это вторая сделка, которую
 никто не заказывал. Поэтому:
 
-* read-only вызовы ретраим свободно;
-* мутации — только если нам известен ключ идемпотентности и ошибка
-  классифицирована как «безопасная для повтора» (UNAVAILABLE, DEADLINE_EXCEEDED);
-* ``RESOURCE_EXHAUSTED`` (квоты API) — отдельная ветка: ретраим с уважением
-  к лимитам, а не «сразу ещё раз».
+* read-only вызовы ретраим с ограниченным backoff;
+* мутации не повторяем вслепую даже при известном idempotency key — при неопределенном
+  результате сначала запрашиваем исходную заявку по клиентскому ключу;
+* ``RESOURCE_EXHAUSTED`` повторяется только у явно безопасного read-only вызова.
 """
 
 from __future__ import annotations
@@ -70,11 +69,13 @@ async def retry_async(
     policy: RetryPolicy = DEFAULT_POLICY,
     idempotency_key: str | None = None,
     operation_name: str = "grpc_call",
+    safe_to_retry: bool = False,
 ) -> Any:
     """Выполняет операцию с повторами.
 
-    ``idempotency_key`` обязателен для мутаций: если его нет, повтор
-    не производится ни при каких обстоятельствах.
+    Повтор разрешён только при ``safe_to_retry=True`` для операций, чья
+    повторяемость доказана (обычно read-only). Наличие idempotency key не
+    делает слепой повтор финансовой мутации безопасным.
     """
     last_error: BaseException | None = None
 
@@ -88,15 +89,18 @@ async def retry_async(
             kind = classify_error(exc)
 
             if kind == "permanent":
-                logger.warning("grpc_permanent_error", operation=operation_name, error=str(exc))
+                logger.warning(
+                    "grpc_permanent_error", operation=operation_name, error_type=type(exc).__name__
+                )
                 raise
 
-            if idempotency_key is None:
+            if not safe_to_retry:
                 logger.error(
-                    "retry_skipped_no_idempotency_key",
+                    "retry_skipped_unsafe_mutation",
                     operation=operation_name,
-                    error=str(exc),
-                    message="повтор мутации без ключа идемпотентности запрещён",
+                    error_type=type(exc).__name__,
+                    has_idempotency_key=idempotency_key is not None,
+                    message="после неопределённой мутации требуется сверка, не повторная отправка",
                 )
                 raise
 
@@ -112,6 +116,7 @@ async def retry_async(
                 attempt=attempt,
                 delay=round(delay, 3),
                 kind=kind,
+                error_type=type(exc).__name__,
             )
             await asyncio.sleep(delay)
 
@@ -127,5 +132,9 @@ async def retry_read(
 ) -> Any:
     """Повтор read-only вызова — всегда безопасен."""
     return await retry_async(
-        operation, policy=policy, idempotency_key="read-only", operation_name=operation_name
+        operation,
+        policy=policy,
+        idempotency_key="read-only",
+        operation_name=operation_name,
+        safe_to_retry=True,
     )

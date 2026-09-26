@@ -138,7 +138,7 @@
 
 ## Конфигурация (`config/`)
 
-* `settings.py` — Pydantic Settings, префикс `REDBOT__`, `extra="forbid"`,
+* `settings.py` — Pydantic Settings, префикс `REDBOT_`, `extra="forbid"`,
   fail-fast валидация (live без токена/счёта, insecure TLS в live).
 * `secrets_source.py` — keyring как источник токена с низшим приоритетом.
 * `logging_config.py` — structlog + редактирование секретов в логах.

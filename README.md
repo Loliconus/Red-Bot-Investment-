@@ -42,7 +42,7 @@ python main.py run --mode sandbox
 ```
 
 Web GUI доступен в браузере по адресу: **`http://localhost:8000`**  
-Пароль по умолчанию для входа в локальном режиме разработки / песочнице: **`dev-only-insecure-secret`** (настраивается через переменную `REDBOT__WEB__SESSION_SECRET`).
+Пароль по умолчанию для входа в локальном режиме разработки / песочнице: **`dev-only-insecure-secret`** (настраивается через переменную `REDBOT_WEB__SESSION_SECRET`).
 
 ---
 
@@ -52,11 +52,11 @@ Web GUI доступен в браузере по адресу: **`http://localh
 
 | Что хранится | Где хранится | Описание и формат |
 | :--- | :--- | :--- |
-| **Токены и пароли** | 1. `keyring` (системное хранилище ОС)<br>2. Файл `.env` в корне проекта | Сервис `red-bot`, ключ `tbank_api_token`. В `.env` задаётся переменной `REDBOT__TBANK__API_TOKEN`. Пароль сессии GUI: `REDBOT__WEB__SESSION_SECRET`. |
+| **Токены и пароли** | 1. `keyring` (системное хранилище ОС)<br>2. Файл `.env` в корне проекта | Сервис `red-bot`, ключ `tbank_api_token`. В `.env` задаётся переменной `REDBOT_TBANK__API_TOKEN`. Пароль сессии GUI: `REDBOT_WEB__SESSION_SECRET`. |
 | **Торговые инструменты** | `data/redbot.duckdb` (таблица `instruments`) | Хранит список добавленных бумаг: `uid` (FIGI/UID инструмента), `ticker` (тикер, например `SBER`), `class_code` (`TQBR`), `lot_size` (размер лота), `currency` (`RUB`). Дефолты при первом старте: `config/seed_defaults.py`. Встроенный справочник: `config/catalog.py`. |
 | **Флаги активности инструментов** | `data/redbot.duckdb` (таблица `operational_state`) | Ключи вида `instrument:<uid>:enabled` со значениями `true`/`false`. |
 | **Настройки ТА и риск-параметры** | `data/redbot.duckdb` (таблица `strategy_configs`) | Версионируемые записи конфигураций: `risk_per_trade_pct` (% риска на сделку), `min_viable_target_multiplier` (множитель цели), `max_position_notional`, веса модулей Confluence-скоринга (`confluence_weights`). Начальные параметры индикаторов (SMA, EMA, RSI, MACD, Bollinger, ATR, VWAP, OBV): `config/seed_defaults.py`. |
-| **Активный торговый счёт** | `data/redbot.duckdb` (таблица `operational_state`) | Ключ `managed_account_id`. В `.env` может быть предзадан через `REDBOT__TBANK__ACCOUNT_ID`. В контуре песочницы поддерживается переключение счетов на лету. |
+| **Активный торговый счёт** | `data/redbot.duckdb` (таблица `operational_state`) | Ключ `managed_account_id`. В `.env` может быть предзадан через `REDBOT_TBANK__ACCOUNT_ID`. В контуре песочницы поддерживается переключение счетов на лету. |
 | **Рыночные данные (Hot-слой)** | `data/redbot.duckdb` | Таблицы `candles` (свечи D1, H1, M1), `orderbooks` (снимки стакана), `trades`, `positions`, `trade_plans`, `snapshots`, `audit_events`. |
 | **Холодный архив (Cold-слой)** | Директория `data/archive/` | Сжатые Parquet-файлы с разбивкой по слоям хранения (`hot/`, `warm/`, `cold/`) для долгосрочного анализа и бэктестинга. |
 | **TLS-сертификаты доверия** | `config/certs/russian_trusted_ca.pem` | Корневой сертификат НУЦ Минцифры РФ для защищённого соединения с серверами T-Invest API. |
@@ -75,7 +75,7 @@ Web GUI доступен в браузере по адресу: **`http://localh
 ### 2. Администрирование счёта в песочнице (`/risk` и Дашборд)
 * **Понятный счёт и баланс:** текущий баланс капитала, свободные денежные средства и стоимость открытых позиций отображаются в рублях в реальном времени. В режиме песочницы номер счёта открыт и нагляден.
 * **Кнопки быстрого пополнения виртуального счёта:** мгновенное пополнение на `+100 000 ₽`, `+500 000 ₽`, `+1 000 000 ₽` или любую произвольную сумму прямо из интерфейса.
-* **Создание счетов в песочнице в 1 клик:** кнопка «+ Создать новый счёт» автоматически открывает виртуальный счёт в T-Invest Sandbox, пополняет его стартовым капиталом и назначает активным.
+* **Создание счетов в песочнице в 1 клик:** кнопка «+ Создать новый счёт» открывает реальный виртуальный счёт через T-Invest Sandbox и назначает активным. Пополнение выполняется отдельным явным действием; баланс не имитируется локально.
 * **Список счетов и переключение:** наглядная таблица всех открытых в песочнице счетов с возможностью переключаться между ними в один клик («Сделать активным») или закрывать ненужные счета («✕»).
 * **Безопасная смена счёта в LIVE:** для боевого контура сохранена строгая трёхэтапная процедура с подтверждением фразой `СМЕНИТЬ СЧЁТ` и обязательным перезапуском приложения.
 
@@ -83,17 +83,17 @@ Web GUI доступен в браузере по адресу: **`http://localh
 
 ## ⚙️ Переменные окружения (`.env`)
 
-Все параметры конфигурируются через переменные с префиксом `REDBOT__`, вложенные секции разделяются двойным подчёркиванием `__`:
+Все параметры конфигурируются через переменные с префиксом `REDBOT_`, вложенные секции разделяются двойным подчёркиванием `__`:
 
 ```bash
-REDBOT__EXECUTION_MODE=sandbox          # sandbox | live | backtest
-REDBOT__TBANK__API_TOKEN=t.xxxx         # токен T-Invest (или через keyring)
-REDBOT__TBANK__ACCOUNT_ID=2000000000    # managed_account_id
-REDBOT__STORAGE__DATA_DIR=./data        # директория базы данных и архивов
-REDBOT__LOG_LEVEL=INFO                  # DEBUG | INFO | WARNING | ERROR
-REDBOT__WEB__HOST=127.0.0.1             # хост для Web GUI
-REDBOT__WEB__PORT=8000                  # порт для Web GUI
-REDBOT__WEB__SESSION_SECRET=...         # пароль доступа к Web GUI
+REDBOT_EXECUTION_MODE=sandbox          # sandbox | live | backtest
+REDBOT_TBANK__API_TOKEN=t.xxxx         # токен T-Invest (или через keyring)
+REDBOT_TBANK__ACCOUNT_ID=2000000000    # managed_account_id
+REDBOT_STORAGE__DATA_DIR=./data        # директория базы данных и архивов
+REDBOT_LOG_LEVEL=INFO                  # DEBUG | INFO | WARNING | ERROR
+REDBOT_WEB__HOST=127.0.0.1             # хост для Web GUI
+REDBOT_WEB__PORT=8000                  # порт для Web GUI
+REDBOT_WEB__SESSION_SECRET=...         # пароль доступа к Web GUI
 ```
 
 Пример полного шаблона конфигурации доступен в `config/.env.example`.
@@ -135,9 +135,17 @@ mypy
 # Запуск тестов (без обращения к боевому контуру)
 pytest -m "not sandbox" -q
 
-# Запуск тестов песочницы (требуется установленный SDK и активный токен)
-pytest -m sandbox -q
+# Read-only SDK/API probe: поля SDK + реальный sandbox API (без ордеров и пополнений)
+uv run python scripts/check_tinvest_sandbox.py
+
+# Только локальная проверка proto/request-полей SDK (без токена и сети)
+uv run python scripts/check_tinvest_sandbox.py --schema-only
+
+# Сетевые read-only тесты песочницы — только по явному opt-in
+REDBOT_RUN_SANDBOX_TESTS=1 uv run pytest -m sandbox -q
 ```
+
+Режим `sandbox` работает только с официальным `sandbox-invest-public-api.tbank.ru:443` и прекращает запуск при ошибке SDK/API — незаметного перехода на симулятор нет. TLS-проверка включена через `SSL_TBANK_VERIFY=True` (CA встроен в SDK). Сетевой probe read-only и не выставляет заявки, не создает счета и не пополняет баланс.
 
 ---
 

@@ -1,27 +1,29 @@
-"""Контрактные тесты адаптеров T-Invest на песочнице.
+"""Read-only контрактные проверки адаптеров T-Invest на sandbox API.
 
-Запускаются **только** явно: ``pytest -m sandbox``. Требуют токен песочницы
-(в keyring или ``REDBOT__TBANK__API_TOKEN``) и установленный SDK.
-
-Тесты здесь нужны не для покрытия, а для проверки того, чего нельзя проверить
-на фейках: реальная схема protobuf, лимиты API, поведение песочницы при
-некорректном запросе.
+Запускаются явно: ``REDBOT_RUN_SANDBOX_TESTS=1 pytest -m sandbox``. Требуют
+установленный SDK и токен в keyring или ``REDBOT_TBANK__API_TOKEN``. Тесты не создают счета, не пополняют
+баланс и не отправляют/отменяют заявки.
 """
 
 from __future__ import annotations
 
-from datetime import timedelta
+import os
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
 
 import pytest
 
 from config.enums import ExecutionMode
 from config.settings import Settings
+from core.domain.enums import Timeframe
 
 pytestmark = [
     pytest.mark.sandbox,
     pytest.mark.asyncio,
+    pytest.mark.skipif(
+        os.environ.get("REDBOT_RUN_SANDBOX_TESTS") != "1",
+        reason="Опциональные сетевые тесты: задайте REDBOT_RUN_SANDBOX_TESTS=1",
+    ),
 ]
 
 
@@ -35,50 +37,48 @@ def _sdk_available() -> bool:
 
 @pytest.fixture
 def sandbox_settings() -> Settings:
-    return Settings(
-        execution_mode=ExecutionMode.SANDBOX,
-        tbank={"account_id": "sandbox-account"},
-    )
+    return Settings(execution_mode=ExecutionMode.SANDBOX)
 
 
 @pytest.mark.skipif(not _sdk_available(), reason="SDK t-tech-investments не установлен")
-async def test_sandbox_adapters_connect(sandbox_settings: Settings) -> None:
-    """Минимальная проверка: адаптеры поднимаются и отдают список инструментов."""
+async def test_sandbox_read_only_api_calls_and_response_fields(
+    sandbox_settings: Settings,
+) -> None:
     from adapters.driven.sandbox.sandbox_adapter import create_sandbox_adapters
 
     market_data, broker = await create_sandbox_adapters(sandbox_settings)
     try:
+        accounts = await broker.get_sandbox_accounts()
+        assert isinstance(accounts, list)
+
         instruments = await broker.list_instruments()
         assert isinstance(instruments, list)
-    finally:
-        await market_data.aclose()
-        await broker.aclose()
 
-
-@pytest.mark.skipif(not _sdk_available(), reason="SDK t-tech-investments не установлен")
-async def test_sandbox_market_data_returns_candles(sandbox_settings: Settings) -> None:
-    from adapters.driven.sandbox.sandbox_adapter import create_sandbox_adapters
-
-    market_data, broker = await create_sandbox_adapters(sandbox_settings)
-    try:
-        instruments = await broker.list_instruments()
-        if not instruments:
-            pytest.skip("в песочнице нет доступных инструментов")
-
-        instrument: Any = instruments[0]
-        now = market_data._channel and __import__("datetime").datetime.now(
-            tz=__import__("datetime").timezone.utc
-        )
+        instrument = await market_data.resolve_instrument("SBER", "TQBR")
+        now = datetime.now(tz=UTC)
         candles = await market_data.get_candles(
             instrument,
-            __import__("core.domain.enums", fromlist=["Timeframe"]).Timeframe.H1,
-            from_=now - timedelta(days=7),
+            Timeframe.D1,
+            from_=now - timedelta(days=30),
             to=now,
         )
+        assert isinstance(candles, list)
         for candle in candles:
-            assert candle.timeframe.value == "1h"
-            assert candle.volume >= 0
+            assert candle.timeframe is Timeframe.D1
+            assert candle.timestamp.tzinfo is not None
             assert isinstance(candle.close, Decimal)
+
+        book = await market_data.get_orderbook(instrument, depth=10)
+        assert book.captured_at.tzinfo is not None
+        assert all(level.quantity >= 0 for level in (*book.bids, *book.asks))
+
+        # Этот ID нужен только для type checking: GetPortfolio прозванивается,
+        # если пользователь явно указал свой реальный sandbox account_id.
+        account_id = sandbox_settings.tbank.account_id
+        if account_id:
+            portfolio = await broker.get_portfolio()
+            assert portfolio is not None
+            assert portfolio.account_id == account_id
     finally:
         await market_data.aclose()
         await broker.aclose()

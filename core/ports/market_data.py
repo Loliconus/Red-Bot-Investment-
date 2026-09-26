@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
 from core.domain.entities import Instrument
@@ -58,11 +59,8 @@ class MarketDataPort(Protocol):
         indicator: str,
         timeframe: Timeframe,
         params: Mapping[str, Any],
-    ) -> dict[str, float | None]:
-        """Индикаторы, предоставляемые API: SMA, EMA, RSI, MACD, Bollinger.
-
-        Возвращает словарь ``имя серии -> значение`` (например ``{"sma": 275.13}``
-        или ``{"macd": ..., "signal": ..., "histogram": ...}``).
+    ) -> dict[str, Decimal | None]:
+        """Индикаторы API в Decimal: ``{"sma": Decimal("275.13")}`` и т. п.
         """
         ...
 

@@ -45,7 +45,7 @@ class FakeMarketData:
         *,
         instruments: dict[tuple[str, str], Instrument] | None = None,
         orderbook: OrderbookSnapshot | None = None,
-        indicators: dict[tuple[str, str, Timeframe], dict[str, float | None]] | None = None,
+        indicators: dict[tuple[str, str, Timeframe], dict[str, Decimal | None]] | None = None,
         raise_on_orderbook: bool = False,
     ) -> None:
         self._candles = candles or {}
@@ -87,8 +87,12 @@ class FakeMarketData:
         indicator: str,
         timeframe: Timeframe,
         params: Mapping[str, Any],
-    ) -> dict[str, float | None]:
-        return self._indicators.get((instrument.uid, indicator, timeframe), {})
+    ) -> dict[str, Decimal | None]:
+        values = self._indicators.get((instrument.uid, indicator, timeframe), {})
+        return {
+            name: Decimal(str(value)) if value is not None else None
+            for name, value in values.items()
+        }
 
     async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
         key = (ticker, class_code)

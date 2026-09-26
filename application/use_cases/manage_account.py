@@ -35,15 +35,12 @@ async def get_account_overview(context: AppContext) -> dict[str, Any]:
     cash = portfolio.available_cash if portfolio else ZERO
     positions_value = portfolio.positions_value if portfolio else ZERO
 
-    # Получаем список счетов (для песочницы)
+    # Получаем список реальных счетов (для песочницы).
     accounts: list[dict[str, Any]] = []
     if hasattr(context.broker, "get_sandbox_accounts"):
-        try:
-            accounts = await context.broker.get_sandbox_accounts()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("get_sandbox_accounts_failed", error=str(exc))
+        accounts = await context.broker.get_sandbox_accounts()
 
-    if not accounts and context.active_account_id:
+    if not accounts and context.active_account_id and not is_sandbox:
         accounts = [
             {
                 "id": context.active_account_id,
@@ -78,59 +75,26 @@ async def topup_sandbox(context: AppContext, amount: Decimal) -> Decimal:
 
     account_id = context.active_account_id
     if not account_id:
-        account_id = await create_sandbox_account(context, "Основной счёт")
+        raise RuntimeError("Сначала выберите или создайте настоящий sandbox-счёт")
+    pay_in = getattr(context.broker, "sandbox_pay_in", None)
+    if pay_in is None:
+        raise RuntimeError("Текущий адаптер не поддерживает пополнение sandbox API")
 
-    # Вызываем метод брокера песочницы при наличии
-    if hasattr(context.broker, "sandbox_pay_in"):
-        try:
-            await context.broker.sandbox_pay_in(account_id, amount)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("broker_sandbox_pay_in_failed", error=str(exc))
-
-    # Обновляем портфель
-    if context.portfolio is not None:
-        new_total = context.portfolio.total_value + amount
-        new_cash = context.portfolio.available_cash + amount
-        context.portfolio = PortfolioState(
-            account_id=account_id,
-            total_value=new_total,
-            available_cash=new_cash,
-            positions_value=context.portfolio.positions_value,
-            updated_at=context.clock.now(),
-        )
-    else:
-        context.portfolio = PortfolioState(
-            account_id=account_id,
-            total_value=amount,
-            available_cash=amount,
-            positions_value=ZERO,
-            updated_at=context.clock.now(),
-        )
-
-    # Сохраняем в БД
-    await _persist_portfolio(context, context.portfolio)
-    logger.info("sandbox_topup_successful", account_id=account_id, amount=str(amount))
-    return context.portfolio.total_value
+    # Платёж вызывается один раз: SandboxPayIn не имеет ключа идемпотентности.
+    await pay_in(account_id, amount)
+    portfolio = await refresh_portfolio(context)
+    logger.info("sandbox_topup_successful", amount=str(amount))
+    return portfolio.total_value
 
 
 async def create_sandbox_account(context: AppContext, name: str = "Red-Bot Sandbox") -> str:
-    """Создаёт новый виртуальный счёт в песочнице и делает его активным."""
-    new_id = ""
-    if hasattr(context.broker, "open_sandbox_account"):
-        try:
-            new_id = await context.broker.open_sandbox_account(name=name)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("broker_open_sandbox_account_failed", error=str(exc))
-
-    if not new_id:
-        new_id = f"sb-{int(context.clock.now().timestamp())}"
-
-    # Привязываем новый счёт
+    """Создаёт реальный виртуальный счёт и активирует его без фиктивного баланса."""
+    open_account = getattr(context.broker, "open_sandbox_account", None)
+    if open_account is None:
+        raise RuntimeError("Текущий адаптер не поддерживает SandboxService")
+    new_id = await open_account(name=name)
     await switch_sandbox_account(context, new_id)
-
-    # Стартовое пополнение на 1 000 000 руб
-    await topup_sandbox(context, Decimal("1000000"))
-    logger.info("sandbox_account_created_and_activated", account_id=new_id)
+    logger.info("sandbox_account_created_and_activated")
     return new_id
 
 
@@ -175,28 +139,34 @@ async def close_sandbox_account(context: AppContext, account_id: str) -> None:
 
 
 async def refresh_portfolio(context: AppContext) -> PortfolioState:
-    """Запрашивает актуальный снимок портфеля у брокера или из БД."""
-    portfolio = None
-    if hasattr(context.broker, "get_portfolio"):
-        try:
-            portfolio = await context.broker.get_portfolio()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("broker_get_portfolio_failed", error=str(exc))
-
-    if portfolio is None:
-        try:
-            portfolio = await context.repository.get_latest_portfolio_state()
-        except Exception:  # noqa: BLE001
-            portfolio = None
-
-    if portfolio is None:
-        portfolio = PortfolioState(
-            account_id=context.active_account_id or "sandbox-01",
-            total_value=Decimal("1000000"),
-            available_cash=Decimal("1000000"),
-            positions_value=ZERO,
-            updated_at=context.clock.now(),
-        )
+    """Запрашивает баланс API; sandbox не подменяется устаревшим или фиктивным."""
+    if context.execution_mode is ExecutionMode.SANDBOX:
+        get_portfolio = getattr(context.broker, "get_portfolio", None)
+        if get_portfolio is None:
+            raise RuntimeError("Sandbox адаптер не реализует GetPortfolio")
+        portfolio = await get_portfolio()
+        if portfolio is None:
+            raise RuntimeError("Sandbox API не вернул портфель выбранного счета")
+    else:
+        portfolio = None
+        if hasattr(context.broker, "get_portfolio"):
+            try:
+                portfolio = await context.broker.get_portfolio()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("broker_get_portfolio_failed", error=str(exc))
+        if portfolio is None:
+            try:
+                portfolio = await context.repository.get_latest_portfolio_state()
+            except Exception:  # noqa: BLE001
+                portfolio = None
+        if portfolio is None:
+            portfolio = PortfolioState(
+                account_id=context.active_account_id or "backtest",
+                total_value=Decimal("1000000"),
+                available_cash=Decimal("1000000"),
+                positions_value=ZERO,
+                updated_at=context.clock.now(),
+            )
 
     context.portfolio = portfolio
     await _persist_portfolio(context, portfolio)

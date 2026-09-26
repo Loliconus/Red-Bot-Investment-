@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -128,7 +128,22 @@ def build_candle_subscription(
     """Фабрика итератора свечей для менеджера."""
 
     def factory(subscription: Subscription) -> Any:
-        return adapter.stream_candles(subscription.instrument, subscription.timeframe)
+        async def consume() -> AsyncIterator[OHLCV]:
+            stream = adapter.stream_candles(subscription.instrument, subscription.timeframe)
+            async for candle in stream:
+                try:
+                    await handler(subscription.instrument, subscription.timeframe, candle)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Ошибка обработчика свечи",
+                        uid=subscription.instrument.uid,
+                        tf=subscription.timeframe.value,
+                    )
+                yield candle
+
+        return consume()
 
     return factory
 

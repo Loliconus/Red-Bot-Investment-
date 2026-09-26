@@ -9,8 +9,8 @@
 2. **Идемпотентность.** Ключ ``client_order_id`` (UUID ≤ 36 символов)
    генерируется **до** сетевого вызова и логируется. Повторная отправка того же
    ключа не создаёт вторую сделку.
-3. **Только long.** Направление захардкожено в ``ORDER_DIRECTION_BUY``; шорты
-   удалены из домена полностью.
+3. **Только long.** Направление открытия — ``OrderDirection.ORDER_DIRECTION_BUY``;
+   продажа возможна только для закрытия уже открытой позиции.
 4. **quantity — лоты**, не штуки.
 """
 
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from uuid import NAMESPACE_URL, uuid5
 
 import structlog
 
@@ -26,8 +27,9 @@ from adapters.driven.tbank.mappers import (
     order_state_to_domain,
     position_to_domain,
     post_order_response_to_domain,
+    quotation_to_decimal,
 )
-from adapters.driven.tbank.retry import retry_async
+from adapters.driven.tbank.retry import classify_error
 from core.domain.entities import (
     Instrument,
     OrderResult,
@@ -45,16 +47,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-#: Направление «покупка» в API.
-ORDER_DIRECTION_BUY = 1
-#: Тип заявки «рыночная». Лимитные заявки в MVP не используются.
-ORDER_TYPE_MARKET = 1
-
 MAX_CLIENT_ORDER_ID_LENGTH = 36
 
 
 class ForeignAccountError(RuntimeError):
     """Попытка работать со счётом, отличным от ``managed_account_id``."""
+
+
+class OrderSubmissionUncertainError(RuntimeError):
+    """API не позволило установить, принята ли отправленная заявка."""
 
 
 class TBankBrokerAdapter:
@@ -80,20 +81,89 @@ class TBankBrokerAdapter:
     def _orders(self) -> Any:
         return self._channel.services.orders
 
+    async def _submit_order(self, request: Any) -> Any:
+        return await self._orders.post_order(request=request)
+
+    async def _cancel_order_request(self, request: Any) -> Any:
+        return await self._orders.cancel_order(request=request)
+
+    async def _get_order_state(self, request: Any) -> Any:
+        return await self._orders.get_order_state(request=request)
+
+    async def _submit_order_and_reconcile(
+        self,
+        request: Any,
+        *,
+        client_order_id: str,
+        operation_name: str,
+    ) -> OrderResult:
+        """Submit once; on an uncertain transport error, query by request ID.
+
+        Never blindly repost a financial mutation. If the request state cannot
+        establish whether it was accepted, bubble up an explicit uncertain result
+        so the caller can halt and reconcile instead of creating a duplicate.
+        """
+        try:
+            response = await self._submit_order(request)
+        except Exception as submit_error:
+            if classify_error(submit_error) == "permanent":
+                raise
+
+            from t_tech.invest.grpc.schemas import GetOrderStateRequest, OrderIdType
+
+            state_request = GetOrderStateRequest(
+                account_id=self._account_id,
+                order_id=client_order_id,
+                order_id_type=OrderIdType.ORDER_ID_TYPE_REQUEST,
+            )
+            try:
+                state = await retry_read_safe(lambda: self._get_order_state(state_request))
+            except Exception as reconcile_error:
+                msg = (
+                    f"{operation_name}: исход отправки неизвестен; проверьте заявку "
+                    "по клиентскому order_id до повторной отправки"
+                )
+                raise OrderSubmissionUncertainError(msg) from reconcile_error
+
+            if not getattr(state, "order_id", ""):
+                msg = (
+                    f"{operation_name}: API не подтвердил результат; проверьте заявку "
+                    "по клиентскому order_id до повторной отправки"
+                )
+                raise OrderSubmissionUncertainError(msg) from submit_error
+
+            mapped = order_state_to_domain(state)
+            logger.warning(
+                "post_order_reconciled_after_transport_error",
+                operation=operation_name,
+                client_order_id=client_order_id,
+            )
+            return OrderResult(
+                order_id=mapped.order_id,
+                client_order_id=client_order_id,
+                status=mapped.status,
+                filled_lots=mapped.filled_lots,
+                message=mapped.message,
+            )
+
+        return post_order_response_to_domain(response, client_order_id=client_order_id)
+
     async def place_order(self, plan: TradePlan, quantity: int) -> OrderResult:
         """Выставляет long-ордер. ``quantity`` — лоты."""
-        from t_tech.invest.grpc.schemas import PostOrderRequest
+        from t_tech.invest.grpc.schemas import OrderDirection, OrderType, PostOrderRequest
 
         self._assert_managed_account(self._account_id)
+        if quantity <= 0:
+            raise ValueError("Количество лотов должно быть больше нуля")
 
         client_order_id = _client_order_id(plan.id)
         request = PostOrderRequest(
             instrument_id=plan.instrument.uid,
             quantity=quantity,
             price=None,
-            direction=ORDER_DIRECTION_BUY,
+            direction=OrderDirection.ORDER_DIRECTION_BUY,
             account_id=self._account_id,
-            order_type=ORDER_TYPE_MARKET,
+            order_type=OrderType.ORDER_TYPE_MARKET,
             order_id=client_order_id,
         )
 
@@ -105,47 +175,47 @@ class TBankBrokerAdapter:
             lots=quantity,
         )
 
-        response = await retry_async(
-            lambda: self._orders.post_order(request=request),
-            idempotency_key=client_order_id,
-            operation_name="post_order",
+        return await self._submit_order_and_reconcile(
+            request, client_order_id=client_order_id, operation_name="post_order"
         )
-        return post_order_response_to_domain(response, client_order_id=client_order_id)
 
     async def cancel_order(self, order_id: str) -> None:
-        from t_tech.invest.grpc.schemas import CancelOrderRequest
+        from t_tech.invest.grpc.schemas import CancelOrderRequest, OrderIdType
 
         self._assert_managed_account(self._account_id)
-        request = CancelOrderRequest(account_id=self._account_id, order_id=order_id)
-        await retry_async(
-            lambda: self._orders.cancel_order(request=request),
-            idempotency_key=order_id,
-            operation_name="cancel_order",
+        request = CancelOrderRequest(
+            account_id=self._account_id,
+            order_id=order_id,
+            order_id_type=OrderIdType.ORDER_ID_TYPE_EXCHANGE,
         )
+        await self._cancel_order_request(request)
 
     async def get_order_status(self, order_id: str) -> OrderState:
-        from t_tech.invest.grpc.schemas import GetOrderStateRequest
+        from t_tech.invest.grpc.schemas import GetOrderStateRequest, OrderIdType
 
         self._assert_managed_account(self._account_id)
-        request = GetOrderStateRequest(account_id=self._account_id, order_id=order_id)
-        response = await retry_read_safe(lambda: self._orders.get_order_state(request=request))
+        request = GetOrderStateRequest(
+            account_id=self._account_id,
+            order_id=order_id,
+            order_id_type=OrderIdType.ORDER_ID_TYPE_EXCHANGE,
+        )
+        response = await retry_read_safe(lambda: self._get_order_state(request))
         return order_state_to_domain(response)
 
     async def close_position(self, position: Position, reason: str) -> OrderResult:
         """Закрывает позицию рыночной продажей (не шорт — закрытие лонга)."""
-        from t_tech.invest.grpc.schemas import PostOrderRequest
+        from t_tech.invest.grpc.schemas import OrderDirection, OrderType, PostOrderRequest
 
         self._assert_managed_account(self._account_id)
         client_order_id = _client_order_id(position.linked_plan_id, suffix="close")
-        sell_direction = 2  # ORDER_DIRECTION_SELL
 
         request = PostOrderRequest(
             instrument_id=position.instrument.uid,
             quantity=max(position.lots, 1),
             price=None,
-            direction=sell_direction,
+            direction=OrderDirection.ORDER_DIRECTION_SELL,
             account_id=self._account_id,
-            order_type=ORDER_TYPE_MARKET,
+            order_type=OrderType.ORDER_TYPE_MARKET,
             order_id=client_order_id,
         )
         logger.warning(
@@ -155,20 +225,17 @@ class TBankBrokerAdapter:
             reason=reason,
             client_order_id=client_order_id,
         )
-        response = await retry_async(
-            lambda: self._orders.post_order(request=request),
-            idempotency_key=client_order_id,
-            operation_name="close_position",
+        return await self._submit_order_and_reconcile(
+            request, client_order_id=client_order_id, operation_name="close_position"
         )
-        return post_order_response_to_domain(response, client_order_id=client_order_id)
 
     async def get_open_positions(self) -> list[Position]:
-        from t_tech.invest.grpc.schemas import PositionsRequest
+        from t_tech.invest.grpc.schemas import PortfolioRequest
 
         self._assert_managed_account(self._account_id)
-        request = PositionsRequest(account_id=self._account_id)
+        request = PortfolioRequest(account_id=self._account_id)
         response = await retry_read_safe(
-            lambda: self._channel.services.operations.get_positions(request=request)
+            lambda: self._channel.services.operations.get_portfolio(request=request)
         )
         return await self._positions_from_response(response)
 
@@ -176,13 +243,18 @@ class TBankBrokerAdapter:
         from uuid import UUID
 
         result: list[Position] = []
-        for raw in getattr(response, "securities", []) or []:
+        raw_positions = getattr(response, "positions", None)
+        if raw_positions is None:
+            raw_positions = getattr(response, "securities", []) or []
+        for raw in raw_positions:
             uid = str(getattr(raw, "instrument_uid", "") or "")
+            if not uid:
+                continue
             instrument = await self.get_instrument(uid)
             if instrument is None:
                 continue
-            quantity = int(float(getattr(raw, "balance", 0) or 0))
-            if quantity <= 0:
+            quantity_value = getattr(raw, "quantity", None)
+            if quantity_value is None or quotation_to_decimal(quantity_value) <= 0:
                 continue
             result.append(position_to_domain(raw, instrument, plan_id=UUID(int=0)))
         return result
@@ -194,24 +266,21 @@ class TBankBrokerAdapter:
         )
 
         request = InstrumentRequest(id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_UID, id=uid)
-        try:
-            response = await retry_read_safe(
-                lambda: self._channel.services.instruments.get_instrument_by(request=request)
-            )
-        except Exception:  # noqa: BLE001 - справочник может быть недоступен
-            logger.warning("instrument_lookup_failed", uid=uid)
-            return None
-
+        response = await retry_read_safe(
+            lambda: self._channel.services.instruments.get_instrument_by(request=request)
+        )
         instrument = getattr(response, "instrument", None)
         if instrument is None:
             return None
         return instrument_to_domain(instrument)
 
     async def list_instruments(self) -> list[Instrument]:
-        """Справочник акций: нужен для первичного заполнения БД."""
-        from t_tech.invest.grpc.schemas import InstrumentsRequest
+        """Справочник доступных для торговли акций."""
+        from t_tech.invest.grpc.schemas import InstrumentStatus, InstrumentsRequest
 
-        request = InstrumentsRequest(instrument_status=1)  # INSTRUMENT_STATUS_BASE
+        request = InstrumentsRequest(
+            instrument_status=InstrumentStatus.INSTRUMENT_STATUS_BASE
+        )
         response = await retry_read_safe(
             lambda: self._channel.services.instruments.shares(request=request)
         )
@@ -226,14 +295,10 @@ class TBankBrokerAdapter:
             return None
         self._assert_managed_account(self._account_id)
         request = PortfolioRequest(account_id=self._account_id)
-        try:
-            response = await retry_read_safe(
-                lambda: self._channel.services.operations.get_portfolio(request=request)
-            )
-            return portfolio_response_to_domain(response, account_id=self._account_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("portfolio_lookup_failed", account_id=self._account_id, error=str(exc))
-            return None
+        response = await retry_read_safe(
+            lambda: self._channel.services.operations.get_portfolio(request=request)
+        )
+        return portfolio_response_to_domain(response, account_id=self._account_id)
 
     async def aclose(self) -> None:
         await self._channel.aclose()
@@ -247,9 +312,10 @@ async def retry_read_safe(operation: Any) -> Any:
 
 
 def _client_order_id(plan_id: UUID, *, suffix: str = "") -> str:
-    """Ключ идемпотентности: UUID плана (+ суффикс), не длиннее 36 символов."""
-    raw = f"{plan_id}{'-' + suffix if suffix else ''}"
-    return raw[:MAX_CLIENT_ORDER_ID_LENGTH]
+    """Детерминированный UUID ключа для каждой мутации по торговому плану."""
+    if not suffix:
+        return str(plan_id)
+    return str(uuid5(NAMESPACE_URL, f"red-bot:{plan_id}:{suffix}"))[:MAX_CLIENT_ORDER_ID_LENGTH]
 
 
 def utcnow() -> datetime:

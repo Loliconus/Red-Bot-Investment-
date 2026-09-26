@@ -121,7 +121,7 @@
           <strong style="color: var(--accent);">🔑 Токены и секреты API</strong>
           <div style="color: var(--muted); margin-top: 3px;">
             • Системное защищённое хранилище ОС: <code>keyring</code> (сервис <code>red-bot</code>, ключ <code>tbank_api_token</code>).<br>
-            • Конфигурационный файл окружения: <code>.env</code> (переменная <code>REDBOT__TBANK__API_TOKEN</code>, пример в <code>config/.env.example</code>).
+            • Конфигурационный файл окружения: <code>.env</code> (переменная <code>REDBOT_TBANK__API_TOKEN</code>, пример в <code>config/.env.example</code>).
           </div>
         </div>
 
@@ -146,7 +146,7 @@
           <strong style="color: var(--accent);">💳 Счёт и контур исполнения</strong>
           <div style="color: var(--muted); margin-top: 3px;">
             • Активный счёт: таблица <code>operational_state</code> (ключ <code>managed_account_id</code>) в <code>data/redbot.duckdb</code>.<br>
-            • Контур запуска (SANDBOX / LIVE / BACKTEST): <code>.env</code> (параметр <code>REDBOT__EXECUTION_MODE</code>).
+            • Контур запуска (SANDBOX / LIVE / BACKTEST): <code>.env</code> (параметр <code>REDBOT_EXECUTION_MODE</code>).
           </div>
         </div>
 

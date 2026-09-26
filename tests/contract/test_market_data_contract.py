@@ -114,7 +114,7 @@ async def test_get_api_indicator_returns_mapping(adapter: Any, instrument: Any) 
     values = await adapter.get_api_indicator(instrument, "atr", Timeframe.D1, {"period": 14})
     assert isinstance(values, dict)
     for value in values.values():
-        assert value is None or isinstance(value, float)
+        assert value is None or isinstance(value, Decimal)
 
 
 async def test_aclose_is_idempotent(adapter: Any) -> None:

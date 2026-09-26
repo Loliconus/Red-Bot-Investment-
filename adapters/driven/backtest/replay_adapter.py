@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -52,8 +53,6 @@ class BacktestReplayAdapter:
 
         Формат строки: ``(ts, open, high, low, close, volume)``.
         """
-        from decimal import Decimal
-
         candles = tuple(
             OHLCV(
                 open=Decimal(str(row[1])),
@@ -143,7 +142,7 @@ class BacktestReplayAdapter:
         indicator: str,
         timeframe: Timeframe,
         params: Mapping[str, Any],
-    ) -> dict[str, float | None]:
+    ) -> dict[str, Decimal | None]:
         """Индикатор считается локально — в бэктесте API недоступен."""
         from core.analysis.atr import ATRIndicator
         from core.domain.value_objects import CandleSeries
@@ -160,7 +159,7 @@ class BacktestReplayAdapter:
                 result = ATRIndicator(period=int(params.get("period", 14))).calculate(series)
             except ValueError:
                 return {}
-            return {"atr": float(result.value)}
+            return {"atr": result.value}
 
         msg = (
             f"Индикатор {indicator} недоступен в режиме бэктеста: "

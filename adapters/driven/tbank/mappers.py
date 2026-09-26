@@ -21,56 +21,70 @@ from core.domain.entities import Instrument, OrderResult, OrderState, PortfolioS
 from core.domain.enums import OrderSide, OrderStatus, Timeframe
 from core.domain.value_objects import OHLCV, OrderbookLevel, OrderbookSnapshot
 
-NANO = Decimal("1_000_000_000")
 ZERO = Decimal("0")
 
-#: Соответствие доменных таймфреймов и интервалов свечей из API.
-TIMEFRAME_TO_API_INTERVAL: dict[Timeframe, int] = {
-    Timeframe.M1: 1,  # CandleInterval.CANDLE_INTERVAL_1_MIN
-    Timeframe.H1: 5,  # CANDLE_INTERVAL_HOUR
-    Timeframe.D1: 8,  # CANDLE_INTERVAL_DAY
+#: Имена enum значений в SDK. Используем символы, а не числовые значения:
+#: номера enum менялись между версиями proto, а 5 и 8 — это не час/день.
+TIMEFRAME_TO_API_INTERVAL: dict[Timeframe, str] = {
+    Timeframe.M1: "CANDLE_INTERVAL_1_MIN",
+    Timeframe.H1: "CANDLE_INTERVAL_HOUR",
+    Timeframe.D1: "CANDLE_INTERVAL_DAY",
+}
+TIMEFRAME_TO_SUBSCRIPTION_INTERVAL: dict[Timeframe, str] = {
+    Timeframe.M1: "SUBSCRIPTION_INTERVAL_ONE_MINUTE",
+    Timeframe.H1: "SUBSCRIPTION_INTERVAL_ONE_HOUR",
+    Timeframe.D1: "SUBSCRIPTION_INTERVAL_ONE_DAY",
+}
+TIMEFRAME_TO_INDICATOR_INTERVAL: dict[Timeframe, str] = {
+    Timeframe.M1: "INDICATOR_INTERVAL_ONE_MINUTE",
+    Timeframe.H1: "INDICATOR_INTERVAL_ONE_HOUR",
+    Timeframe.D1: "INDICATOR_INTERVAL_ONE_DAY",
 }
 
 
 def quotation_to_decimal(quotation: Any) -> Decimal:
-    """``Quotation`` (units + nano) → ``Decimal``."""
+    """Конвертирует SDK Quotation штатной функцией без float."""
     if quotation is None:
         return ZERO
-    units = Decimal(int(getattr(quotation, "units", 0)))
-    nano = Decimal(int(getattr(quotation, "nano", 0)))
-    return units + nano / NANO
+    from t_tech.invest.utils import quotation_to_decimal as sdk_quotation_to_decimal
+
+    return sdk_quotation_to_decimal(quotation)
 
 
 def money_value_to_decimal(money: Any) -> Decimal:
-    """``MoneyValue`` → ``Decimal`` с учётом ``nano``."""
-    return quotation_to_decimal(money)
+    """Конвертирует SDK MoneyValue штатной функцией без float."""
+    if money is None:
+        return ZERO
+    from t_tech.invest.utils import money_to_decimal
+
+    return money_to_decimal(money)
 
 
-def decimal_to_quotation(value: Decimal) -> dict[str, int]:
-    """``Decimal`` → словарь для конструктора ``Quotation``.
+def decimal_to_quotation(value: Decimal) -> Any:
+    """Конвертирует Decimal в SDK Quotation штатной функцией."""
+    from t_tech.invest.utils import decimal_to_quotation as sdk_decimal_to_quotation
 
-    Возвращает plain-данные, а не protobuf-объект: адаптер сам соберёт нужный
-    тип, чтобы этот модуль оставался независимым от конкретной версии SDK.
-    """
-    value = Decimal(value)
-    units = int(value)
-    nano = int((value - units) * NANO)
-    return {"units": units, "nano": nano}
+    return sdk_decimal_to_quotation(value)
 
 
 def proto_timestamp_to_datetime(timestamp: Any) -> datetime:
-    """``google.protobuf.Timestamp`` → tz-aware UTC ``datetime``."""
+    """SDK ``datetime`` или ``google.protobuf.Timestamp`` → tz-aware UTC ``datetime``."""
+    if isinstance(timestamp, datetime):
+        if timestamp.tzinfo is None:
+            msg = "SDK вернул naive datetime вместо UTC timestamp"
+            raise ValueError(msg)
+        return timestamp.astimezone(UTC)
     seconds = int(getattr(timestamp, "seconds", 0))
     nanos = int(getattr(timestamp, "nanos", 0))
-    return datetime.fromtimestamp(seconds + nanos / 1e9, tz=UTC)
+    return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=nanos // 1000)
 
 
-def datetime_to_proto_timestamp(moment: datetime) -> dict[str, int]:
-    """``datetime`` → словарь для ``Timestamp``. Naive datetime считаем ошибкой."""
+def datetime_to_proto_timestamp(moment: datetime) -> datetime:
+    """SDK request-модели принимают ``datetime`` напрямую, не dict/protobuf."""
     if moment.tzinfo is None:
         msg = "Naive datetime не допускается: все моменты времени обязаны быть в UTC"
         raise ValueError(msg)
-    return {"seconds": int(moment.timestamp()), "nanos": int(moment.microsecond * 1000)}
+    return moment.astimezone(UTC)
 
 
 def candle_to_domain(candle: Any, timeframe: Timeframe) -> OHLCV:
@@ -98,11 +112,12 @@ def orderbook_to_domain(response: Any) -> OrderbookSnapshot:
             for item in raw
         )
 
+    timestamp = getattr(response, "orderbook_ts", None) or getattr(response, "time", None)
     return OrderbookSnapshot(
         bids=levels(response.bids),
         asks=levels(response.asks),
-        captured_at=proto_timestamp_to_datetime(response.time)
-        if hasattr(response, "time")
+        captured_at=proto_timestamp_to_datetime(timestamp)
+        if timestamp is not None
         else datetime.now(tz=UTC),
     )
 
@@ -121,10 +136,10 @@ def instrument_to_domain(instrument: Any, *, is_benchmark: bool = False) -> Inst
 
 ORDER_STATUS_MAP: dict[int, OrderStatus] = {
     1: OrderStatus.FILLED,  # EXECUTION_REPORT_STATUS_FILL
-    2: OrderStatus.PARTIALLY_FILLED,  # EXECUTION_REPORT_STATUS_PARTIALLYFILL
+    2: OrderStatus.REJECTED,  # EXECUTION_REPORT_STATUS_REJECTED
     3: OrderStatus.CANCELLED,  # EXECUTION_REPORT_STATUS_CANCELLED
     4: OrderStatus.ACCEPTED,  # EXECUTION_REPORT_STATUS_NEW
-    5: OrderStatus.REJECTED,  # EXECUTION_REPORT_STATUS_REJECTED
+    5: OrderStatus.PARTIALLY_FILLED,  # EXECUTION_REPORT_STATUS_PARTIALLYFILL
 }
 
 
@@ -146,8 +161,8 @@ def post_order_response_to_domain(
     """
     return OrderResult(
         order_id=str(getattr(response, "order_id", "")),
-        client_order_id=client_order_id,
-        status=OrderStatus.ACCEPTED,
+        client_order_id=str(getattr(response, "order_request_id", "") or client_order_id),
+        status=order_status_to_domain(getattr(response, "execution_report_status", 0)),
         filled_lots=int(getattr(response, "lots_executed", 0) or 0),
         filled_price=(
             money_value_to_decimal(response.executed_order_price)

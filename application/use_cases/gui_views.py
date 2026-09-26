@@ -203,7 +203,7 @@ async def chart_view(context: AppContext, uid: str, timeframe: Timeframe) -> dic
     latest = next((decision_view(r, context) for r in records if r.instrument_uid == uid), None)
     try:
         orderbook = await asyncio.wait_for(
-            context.market_data.get_orderbook(instrument, depth=5), timeout=0.4
+            context.market_data.get_orderbook(instrument, depth=10), timeout=0.4
         )
         bids = [{"price": str(p.price), "quantity": p.quantity} for p in orderbook.bids[:5]]
         asks = [{"price": str(p.price), "quantity": p.quantity} for p in orderbook.asks[:5]]

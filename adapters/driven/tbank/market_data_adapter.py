@@ -15,10 +15,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 from adapters.driven.tbank.mappers import (
     TIMEFRAME_TO_API_INTERVAL,
+    TIMEFRAME_TO_INDICATOR_INTERVAL,
+    TIMEFRAME_TO_SUBSCRIPTION_INTERVAL,
     candle_to_domain,
     datetime_to_proto_timestamp,
     instrument_to_domain,
@@ -34,26 +34,15 @@ if TYPE_CHECKING:
 
     from adapters.driven.tbank.grpc_client import TInvestChannel
 
-logger = structlog.get_logger(__name__)
-
-#: Соответствие имён индикаторов кодам ``TypeOfTechnicalAnalysis``.
-TECH_ANALYSIS_TYPES: dict[str, int] = {
-    "sma": 1,
-    "ema": 2,
-    "rsi": 3,
-    "macd": 4,
-    "bollinger": 5,
-    "bb": 5,
-}
-
-#: Поля ответа тех. анализа по имени индикатора.
-TECH_ANALYSIS_FIELDS: dict[str, tuple[str, ...]] = {
-    "sma": ("sma",),
-    "ema": ("ema",),
-    "rsi": ("rsi",),
-    "macd": ("macd", "signal", "histogram"),
-    "bollinger": ("bb_upper_band", "bb_middle_band", "bb_lower_band"),
-    "bb": ("bb_upper_band", "bb_middle_band", "bb_lower_band"),
+#: Имена enum-значений из текущего proto. Не подставляем голые числа:
+#: в API ``BB=1``, ``SMA=5`` (раньше эти значения были перепутаны).
+TECH_ANALYSIS_TYPES: dict[str, str] = {
+    "sma": "INDICATOR_TYPE_SMA",
+    "ema": "INDICATOR_TYPE_EMA",
+    "rsi": "INDICATOR_TYPE_RSI",
+    "macd": "INDICATOR_TYPE_MACD",
+    "bollinger": "INDICATOR_TYPE_BB",
+    "bb": "INDICATOR_TYPE_BB",
 }
 
 
@@ -75,13 +64,14 @@ class TBankMarketDataAdapter:
         to: datetime,
     ) -> list[OHLCV]:
         """Исторические свечи. Всегда tz-aware UTC."""
-        from t_tech.invest.grpc.schemas import GetCandlesRequest  # pyright: ignore
+        from t_tech.invest.grpc.schemas import CandleInterval, GetCandlesRequest
 
         request = GetCandlesRequest(
             instrument_id=instrument.uid,
             from_=datetime_to_proto_timestamp(from_),
             to=datetime_to_proto_timestamp(to),
-            interval=TIMEFRAME_TO_API_INTERVAL[timeframe],
+            interval=getattr(CandleInterval, TIMEFRAME_TO_API_INTERVAL[timeframe]),
+            limit=2400,
         )
         response = await retry_read(
             lambda: self._market_data.get_candles(request=request),
@@ -97,28 +87,49 @@ class TBankMarketDataAdapter:
         """Поток свечей. Переподписка при обрыве — в ``stream_manager``."""
         from t_tech.invest.grpc.schemas import (
             CandleInstrument,
+            MarketDataServerSideStreamRequest,
             SubscribeCandlesRequest,
             SubscriptionAction,
+            SubscriptionInterval,
         )
 
-        request = SubscribeCandlesRequest(
+        subscription = SubscribeCandlesRequest(
             subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
             instruments=[
                 CandleInstrument(
                     instrument_id=instrument.uid,
-                    interval=TIMEFRAME_TO_API_INTERVAL[timeframe],
+                    interval=getattr(
+                        SubscriptionInterval,
+                        TIMEFRAME_TO_SUBSCRIPTION_INTERVAL[timeframe],
+                    ),
                 )
             ],
         )
-        async for update in self._market_data.subscribe_candles(request=request):
-            candle = getattr(update, "candle", None)
-            if candle is None or not getattr(candle, "is_complete", True):
-                continue
-            yield candle_to_domain(candle, timeframe)
+        request = MarketDataServerSideStreamRequest(subscribe_candles_request=subscription)
+        stream = self._channel.services.market_data_stream.market_data_server_side_stream(
+            request=request
+        )
+        try:
+            async for update in stream:
+                candle = getattr(update, "candle", None)
+                if candle is None or not getattr(candle, "is_complete", True):
+                    continue
+                yield candle_to_domain(candle, timeframe)
+        finally:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                await close()
+            else:
+                cancel = getattr(stream, "cancel", None)
+                if cancel is not None:
+                    cancel()
 
     async def get_orderbook(self, instrument: Instrument, depth: int = 20) -> OrderbookSnapshot:
         from t_tech.invest.grpc.schemas import GetOrderBookRequest
 
+        if depth not in {1, 10, 20, 30, 40, 50}:
+            msg = "Глубина стакана API должна быть одной из: 1, 10, 20, 30, 40, 50"
+            raise ValueError(msg)
         request = GetOrderBookRequest(instrument_id=instrument.uid, depth=depth)
         response = await retry_read(
             lambda: self._market_data.get_order_book(request=request),
@@ -132,67 +143,80 @@ class TBankMarketDataAdapter:
         indicator: str,
         timeframe: Timeframe,
         params: Mapping[str, Any],
-    ) -> dict[str, float | None]:
-        """Индикатор из API: SMA / EMA / RSI / MACD / Bollinger."""
+    ) -> dict[str, Decimal | None]:
+        """Индикатор из API без потери точности в Decimal."""
         from t_tech.invest.grpc.schemas import GetTechAnalysisRequest
 
-        indicator_type = TECH_ANALYSIS_TYPES.get(indicator)
-        if indicator_type is None:
+        indicator_type_name = TECH_ANALYSIS_TYPES.get(indicator)
+        if indicator_type_name is None:
             msg = (
                 f"Индикатор {indicator} не предоставляется API. "
                 "Собственные индикаторы считаются в core/analysis"
             )
             raise ValueError(msg)
 
+        normalized = "bb" if indicator in {"bollinger", "bb"} else indicator
         start = _default_from(timeframe)
-        end = datetime.now(tz=start.tzinfo)
-        request = GetTechAnalysisRequest(
-            instrument_id=instrument.uid,
-            from_=datetime_to_proto_timestamp(start),
-            to=datetime_to_proto_timestamp(end),
-            interval=TIMEFRAME_TO_API_INTERVAL[timeframe],
-            indicator_type=indicator_type,
-            **{k: int(v) for k, v in params.items() if isinstance(v, (int, float))},
-        )
+        end = datetime.now(tz=UTC)
+        request_fields: dict[str, Any] = {
+            "instrument_id": instrument.uid,
+            "from_": datetime_to_proto_timestamp(start),
+            "to": datetime_to_proto_timestamp(end),
+            "interval": getattr(
+                GetTechAnalysisRequest.IndicatorInterval,
+                TIMEFRAME_TO_INDICATOR_INTERVAL[timeframe],
+            ),
+            "indicator_type": getattr(
+                GetTechAnalysisRequest.IndicatorType, indicator_type_name
+            ),
+            "type_of_price": GetTechAnalysisRequest.TypeOfPrice.TYPE_OF_PRICE_CLOSE,
+        }
+        period = int(params.get("period", {"sma": 200, "ema": 50, "rsi": 14, "bb": 20}.get(normalized, 14)))
+        if normalized != "macd":
+            request_fields["length"] = period
+        if normalized == "bb":
+            from t_tech.invest.utils import decimal_to_quotation
+
+            deviation = Decimal(str(params.get("deviation", "2")))
+            request_fields["deviation"] = GetTechAnalysisRequest.Deviation(
+                deviation_multiplier=decimal_to_quotation(deviation)
+            )
+        elif normalized == "macd":
+            request_fields["smoothing"] = GetTechAnalysisRequest.Smoothing(
+                fast_length=int(params.get("fast", 12)),
+                slow_length=int(params.get("slow", 26)),
+                signal_smoothing=int(params.get("signal", 9)),
+            )
+
+        request = GetTechAnalysisRequest(**request_fields)
         response = await retry_read(
             lambda: self._market_data.get_tech_analysis(request=request),
             operation_name=f"get_tech_analysis:{indicator}",
         )
-        return _parse_tech_analysis(response, indicator)
+        return _parse_tech_analysis(response, normalized)
 
     async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
-        """Однозначно находит инструмент по тикеру и класс-коду."""
-        from config.catalog import find_catalog_instrument
+        """Однозначно разрешает тикер через InstrumentsService API.
 
-        try:
-            from t_tech.invest.grpc.schemas import InstrumentIdType, InstrumentRequest
+        Не подменяем ошибку сети локальной записью каталога: sandbox-проверка
+        должна подтверждать, что инструмент действительно найден API.
+        """
+        from t_tech.invest.grpc.schemas import InstrumentIdType, InstrumentRequest
 
-            request = InstrumentRequest(
-                id=ticker,
-                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-                class_code=class_code,
-            )
-            response = await retry_read(
-                lambda: self._channel.services.instruments.get_instrument_by(request=request),
-                operation_name="resolve_instrument",
-            )
-            instrument = getattr(response, "instrument", None)
-            if instrument:
-                return instrument_to_domain(instrument)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "resolve_instrument_remote_failed",
-                ticker=ticker,
-                class_code=class_code,
-                error=str(exc),
-            )
-
-        catalog_match = find_catalog_instrument(ticker, class_code)
-        if catalog_match is not None:
-            return catalog_match
-
-        msg = f"Инструмент {ticker}.{class_code} не найден ни в API, ни в каталоге Мосбиржи"
-        raise ValueError(msg)
+        request = InstrumentRequest(
+            id=ticker,
+            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+            class_code=class_code,
+        )
+        response = await retry_read(
+            lambda: self._channel.services.instruments.get_instrument_by(request=request),
+            operation_name="resolve_instrument",
+        )
+        instrument = getattr(response, "instrument", None)
+        if instrument is None:
+            msg = f"T-Invest API не нашёл инструмент {ticker}.{class_code}"
+            raise ValueError(msg)
+        return instrument_to_domain(instrument)
 
     async def aclose(self) -> None:
         await self._channel.aclose()
@@ -206,49 +230,48 @@ def _default_from(timeframe: Timeframe) -> datetime:
     return datetime.now(tz=UTC) - timedelta(days=windows[timeframe])
 
 
-def _parse_tech_analysis(response: Any, indicator: str) -> dict[str, float | None]:
-    """Извлекает последнее значение индикатора из ответа тех. анализа."""
-    fields = TECH_ANALYSIS_FIELDS.get(indicator, (indicator,))
-    items = list(getattr(response, "technical_analysis", []) or [])
+def _parse_tech_analysis(response: Any, indicator: str) -> dict[str, Decimal | None]:
+    """Извлекает последние значения из реальной схемы GetTechAnalysisResponse."""
+    items = list(
+        getattr(response, "technical_indicators", None)
+        or getattr(response, "technical_analysis", [])
+        or []
+    )
     if not items:
         return dict.fromkeys(_output_names(indicator))
 
     last = items[-1]
-    result: dict[str, float | None] = {}
-    for field in fields:
-        value = getattr(last, field, None)
-        if value is None:
-            result[field] = None
-            continue
-        result[field] = float(_quotation(value))
-    return _normalize_names(result, indicator)
+    if indicator in {"bollinger", "bb"}:
+        return {
+            "bb_lower": _optional_quotation(last, "lower_band", "bb_lower_band"),
+            "bb_middle": _optional_quotation(last, "middle_band", "bb_middle_band"),
+            "bb_upper": _optional_quotation(last, "upper_band", "bb_upper_band"),
+        }
+    if indicator == "macd":
+        macd = _optional_quotation(last, "macd")
+        signal = _optional_quotation(last, "signal")
+        return {
+            "macd": macd,
+            "signal": signal,
+            "histogram": macd - signal if macd is not None and signal is not None else None,
+        }
+    field = {"sma": ("middle_band", "sma"), "ema": ("middle_band", "ema"), "rsi": ("signal", "rsi")}[indicator]
+    return {indicator: _optional_quotation(last, *field)}
 
 
-def _quotation(value: Any) -> Decimal:
+def _optional_quotation(item: Any, *field_names: str) -> Decimal | None:
     from adapters.driven.tbank.mappers import quotation_to_decimal
 
-    return quotation_to_decimal(value)
+    for field_name in field_names:
+        value = getattr(item, field_name, None)
+        if value is not None:
+            return quotation_to_decimal(value)
+    return None
 
 
 def _output_names(indicator: str) -> tuple[str, ...]:
     if indicator in {"bollinger", "bb"}:
         return ("bb_lower", "bb_middle", "bb_upper")
-    return (indicator,)
-
-
-def _normalize_names(values: dict[str, float | None], indicator: str) -> dict[str, float | None]:
-    """Приводит имена полей к тем, что ожидает ``core/strategy/setup_scanner``."""
-    if indicator in {"bollinger", "bb"}:
-        mapped = {
-            "bb_lower": values.get("bb_lower_band"),
-            "bb_middle": values.get("bb_middle_band"),
-            "bb_upper": values.get("bb_upper_band"),
-        }
-        return mapped
     if indicator == "macd":
-        return {
-            "macd": values.get("macd"),
-            "signal": values.get("signal"),
-            "histogram": values.get("histogram"),
-        }
-    return values
+        return ("macd", "signal", "histogram")
+    return (indicator,)

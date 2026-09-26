@@ -195,18 +195,20 @@ async def build_context(
     if mode is ExecutionMode.BACKTEST:
         market_data, broker = build_backtest_adapters(settings)
     elif mode is ExecutionMode.SANDBOX:
-        try:
-            from adapters.driven.sandbox.sandbox_adapter import create_sandbox_adapters
+        from adapters.driven.sandbox.sandbox_adapter import create_sandbox_adapters
 
-            market_data, broker = await create_sandbox_adapters(
-                settings, managed_account_id=active_account_id
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "sandbox_adapters_creation_failed_fallback_simulated",
-                error=str(exc),
-            )
-            market_data, broker = build_backtest_adapters(settings)
+        market_data, broker = await create_sandbox_adapters(
+            settings, managed_account_id=active_account_id
+        )
+        try:
+            # Sandbox никогда не переходит в симулятор незаметно. Без соединения,
+            # реального счета или ответа API запуск прерывается.
+            ensure_account = getattr(broker, "ensure_managed_sandbox_account")
+            active_account_id = await ensure_account()
+            await repository.set_operational_value("managed_account_id", active_account_id)
+        except BaseException:
+            await market_data.aclose()
+            raise
     else:
         market_data, broker = await build_tbank_adapters(
             settings, managed_account_id=active_account_id
@@ -227,21 +229,30 @@ async def build_context(
     benchmark = next((i for i in stored_instruments if i.is_benchmark), None)
 
     initial_portfolio: PortfolioState | None = None
-    if hasattr(broker, "get_portfolio"):
-        try:
-            initial_portfolio = await broker.get_portfolio()
-        except Exception:  # noqa: BLE001
-            initial_portfolio = None
-    if initial_portfolio is None:
-        try:
-            initial_portfolio = await repository.get_latest_portfolio_state()
-        except Exception:  # noqa: BLE001
-            initial_portfolio = None
-    if initial_portfolio is None and mode in (ExecutionMode.SANDBOX, ExecutionMode.BACKTEST):
+    if mode is ExecutionMode.SANDBOX:
+        get_portfolio = getattr(broker, "get_portfolio")
+        initial_portfolio = await get_portfolio()
+        if initial_portfolio is None:
+            raise RuntimeError("Sandbox API не вернул портфель выбранного счета")
+    else:
+        if hasattr(broker, "get_portfolio"):
+            try:
+                initial_portfolio = await broker.get_portfolio()
+            except Exception:  # noqa: BLE001
+                initial_portfolio = None
+        if initial_portfolio is None:
+            try:
+                initial_portfolio = await repository.get_latest_portfolio_state()
+            except Exception:  # noqa: BLE001
+                initial_portfolio = None
+
+    # Только бэктест получает начальный виртуальный капитал. Sandbox не должен
+    # показывать пользователю локальный баланс, отсутствующий в T-Invest API.
+    if initial_portfolio is None and mode is ExecutionMode.BACKTEST:
         import json
 
         initial_portfolio = PortfolioState(
-            account_id=active_account_id or "sandbox-01",
+            account_id=active_account_id or "backtest",
             total_value=Decimal("1000000"),
             available_cash=Decimal("1000000"),
             positions_value=Decimal("0"),
