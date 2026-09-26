@@ -20,6 +20,7 @@ from typing import Any
 import structlog
 
 from adapters.driven.tbank.tls import configure_sdk_tls
+from config.enums import ExecutionMode
 from config.settings import Settings, target_for_mode
 
 logger = structlog.get_logger(__name__)
@@ -55,10 +56,14 @@ class TInvestChannel:
         self._services: Any = None
 
     @classmethod
-    async def create(cls, settings: Settings) -> TInvestChannel:
+    async def create(
+        cls,
+        settings: Settings,
+        mode: ExecutionMode | None = None,
+    ) -> TInvestChannel:
         """Асинхронная фабрика: входит в контекст клиента SDK."""
         async_client = _import_async_client()
-        target = target_for_mode(settings)
+        target = target_for_mode(settings, mode)
         configure_sdk_tls()
 
         channel = cls(
@@ -108,6 +113,9 @@ class TInvestChannel:
             logger.info("tinvest_channel_closed", target=self._target)
 
 
-async def create_channel(settings: Settings) -> TInvestChannel:
+async def create_channel(
+    settings: Settings,
+    mode: ExecutionMode | None = None,
+) -> TInvestChannel:
     """Публичная точка создания канала (используется в ``composition``)."""
-    return await TInvestChannel.create(settings)
+    return await TInvestChannel.create(settings, mode=mode)

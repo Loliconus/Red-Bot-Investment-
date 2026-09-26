@@ -84,29 +84,36 @@ class SandboxBrokerAdapter(TBankBrokerAdapter):
             {
                 "id": str(acc.id),
                 "name": str(getattr(acc, "name", "") or "Песочница"),
-                "status": int(getattr(acc, "status", 1)),
-                "type": int(getattr(acc, "type", 1)),
+                "status": int(getattr(acc, "status", 0)),
+                "type": int(getattr(acc, "type", 0)),
                 "is_current": str(acc.id) == self._account_id,
             }
             for acc in getattr(response, "accounts", []) or []
         ]
 
-    async def ensure_managed_sandbox_account(self) -> str:
-        """Выбирает существующий счёт или открывает настоящий sandbox-счёт."""
-        accounts = await self.get_sandbox_accounts()
-        if self._account_id:
-            if not any(account["id"] == self._account_id for account in accounts):
-                raise ValueError(
-                    "Настроенный account_id не найден среди sandbox-счетов. Проверьте "
-                    "REDBOT_TBANK__ACCOUNT_ID и сохранённый managed_account_id: нужен ID "
-                    "именно из sandbox API, а не live-счёта"
-                )
-            return self._account_id
-        if accounts:
-            self._account_id = str(accounts[0]["id"])
-        else:
-            self._account_id = await self.open_sandbox_account()
-        return self._account_id
+    async def get_accounts(self) -> list[dict[str, Any]]:
+        """Общий интерфейс списка счетов для sandbox/live resolver."""
+        return await self.get_sandbox_accounts()
+
+    async def ensure_managed_sandbox_account(
+        self,
+        *,
+        preferred_account_id: str | None = None,
+        selector: Any = None,
+    ) -> str:
+        """Выбирает открытый счёт или однократно создаёт sandbox-счёт при пустом списке."""
+        from application.use_cases.select_account import resolve_managed_account_id
+        from config.enums import ExecutionMode
+
+        selected_id = await resolve_managed_account_id(
+            self,
+            mode=ExecutionMode.SANDBOX,
+            requested_account_id=self._account_id or None,
+            preferred_account_id=preferred_account_id,
+            selector=selector,
+        )
+        self.configure_managed_account(selected_id)
+        return selected_id
 
     async def open_sandbox_account(self, name: str = "Red-Bot Sandbox") -> str:
         """Создаёт счёт через SandboxService. Запрос не поддерживает идемпотентность."""

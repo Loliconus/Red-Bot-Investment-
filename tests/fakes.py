@@ -125,7 +125,7 @@ class FakeBroker:
             {
                 "id": account_id,
                 "name": "Основной счёт в песочнице",
-                "status": 1,
+                "status": 2,
                 "type": 1,
                 "is_current": True,
             }
@@ -145,10 +145,13 @@ class FakeBroker:
             acc["is_current"] = acc["id"] == self.account_id
         return list(self._accounts)
 
+    async def get_accounts(self) -> list[dict[str, Any]]:
+        return await self.get_sandbox_accounts()
+
     async def open_sandbox_account(self, name: str = "Счёт в песочнице") -> str:
         new_id = f"fake-sandbox-{len(self._accounts) + 1:02d}"
         self._accounts.append(
-            {"id": new_id, "name": name, "status": 1, "type": 1, "is_current": False}
+            {"id": new_id, "name": name, "status": 2, "type": 1, "is_current": False}
         )
         return new_id
 

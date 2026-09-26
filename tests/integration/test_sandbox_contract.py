@@ -1,8 +1,8 @@
 """Read-only контрактные проверки адаптеров T-Invest на sandbox API.
 
 Запускаются явно: ``REDBOT_RUN_SANDBOX_TESTS=1 pytest -m sandbox``. Требуют
-установленный SDK и токен в keyring или ``REDBOT_TBANK__API_TOKEN``. Тесты не создают счета, не пополняют
-баланс и не отправляют/отменяют заявки.
+установленный SDK и токен в keyring или ``REDBOT_TBANK__API_TOKEN``.
+Тесты не создают счета, не пополняют баланс и не отправляют/отменяют заявки.
 """
 
 from __future__ import annotations
@@ -48,8 +48,13 @@ async def test_sandbox_read_only_api_calls_and_response_fields(
 
     market_data, broker = await create_sandbox_adapters(sandbox_settings)
     try:
-        accounts = await broker.get_sandbox_accounts()
+        accounts = await broker.get_accounts()
         assert isinstance(accounts, list)
+        for account in accounts:
+            assert isinstance(account["id"], str) and account["id"]
+            assert isinstance(account["status"], int)
+            assert isinstance(account["type"], int)
+            assert isinstance(account["name"], str)
 
         instruments = await broker.list_instruments()
         assert isinstance(instruments, list)

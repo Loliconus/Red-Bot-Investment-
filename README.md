@@ -52,11 +52,11 @@ Web GUI доступен в браузере по адресу: **`http://localh
 
 | Что хранится | Где хранится | Описание и формат |
 | :--- | :--- | :--- |
-| **Токены и пароли** | 1. `keyring` (системное хранилище ОС)<br>2. Файл `.env` в корне проекта | Сервис `red-bot`, ключ `tbank_api_token`. В `.env` задаётся переменной `REDBOT_TBANK__API_TOKEN`. Пароль сессии GUI: `REDBOT_WEB__SESSION_SECRET`. |
+| **Токен T-Invest и секрет GUI** | `keyring` для токена; `REDBOT_TBANK__API_TOKEN` / `REDBOT_WEB__SESSION_SECRET` — только явные секретные overrides для окружения | API-токен задаётся через `uv run redbot secrets set-token` и не хранится в DuckDB. Реальное значение не должно попадать в код, логи или отчёты. |
 | **Торговые инструменты** | `data/redbot.duckdb` (таблица `instruments`) | Хранит список добавленных бумаг: `uid` (FIGI/UID инструмента), `ticker` (тикер, например `SBER`), `class_code` (`TQBR`), `lot_size` (размер лота), `currency` (`RUB`). Дефолты при первом старте: `config/seed_defaults.py`. Встроенный справочник: `config/catalog.py`. |
 | **Флаги активности инструментов** | `data/redbot.duckdb` (таблица `operational_state`) | Ключи вида `instrument:<uid>:enabled` со значениями `true`/`false`. |
 | **Настройки ТА и риск-параметры** | `data/redbot.duckdb` (таблица `strategy_configs`) | Версионируемые записи конфигураций: `risk_per_trade_pct` (% риска на сделку), `min_viable_target_multiplier` (множитель цели), `max_position_notional`, веса модулей Confluence-скоринга (`confluence_weights`). Начальные параметры индикаторов (SMA, EMA, RSI, MACD, Bollinger, ATR, VWAP, OBV): `config/seed_defaults.py`. |
-| **Активный торговый счёт** | `data/redbot.duckdb` (таблица `operational_settings`) | Ключ `managed_account_id`; он имеет приоритет над `REDBOT_TBANK__ACCOUNT_ID`. Для sandbox указывайте ID sandbox-счёта, а не live-счёта. В контуре песочницы поддерживается переключение счетов на лету. |
+| **Режим следующего запуска и счёт** | `data/redbot.duckdb` (таблица `operational_settings`) | Режим хранится в `execution_mode`, выбор счёта отдельно в `managed_account_id:sandbox` и `managed_account_id:live`. Настраивается на `/settings`; счёт также можно указать через `redbot run --account auto|<ID>`. Сохранённый sandbox/live ID сверяется с открытыми счетами своего контура. Старый `managed_account_id` читается только как совместимый fallback и тоже проверяется через API. |
 | **Рыночные данные (Hot-слой)** | `data/redbot.duckdb` | Таблицы `candles` (свечи D1, H1, M1), `orderbooks` (снимки стакана), `trades`, `positions`, `trade_plans`, `snapshots`, `audit_events`. |
 | **Холодный архив (Cold-слой)** | Директория `data/archive/` | Сжатые Parquet-файлы с разбивкой по слоям хранения (`hot/`, `warm/`, `cold/`) для долгосрочного анализа и бэктестинга. |
 | **TLS-сертификаты доверия** | `config/certs/russian_trusted_ca.pem` | Корневой сертификат НУЦ Минцифры РФ для защищённого соединения с серверами T-Invest API. |
@@ -81,22 +81,22 @@ Web GUI доступен в браузере по адресу: **`http://localh
 
 ---
 
-## ⚙️ Переменные окружения (`.env`)
+## ⚙️ Конфигурация без обязательного `.env`
 
-Все параметры конфигурируются через переменные с префиксом `REDBOT_`, вложенные секции разделяются двойным подчёркиванием `__`:
+Для обычного локального запуска `.env` не нужен. Сохраните токен в системном keyring, выполните bootstrap БД и запустите `redbot run`. Режим по умолчанию и счёт приложения хранит в `data/redbot.duckdb`; изменить режим следующего запуска и выбрать открытый счёт можно на странице `/settings`. Режим применяется только после полного перезапуска.
 
 ```bash
-REDBOT_EXECUTION_MODE=sandbox          # sandbox | live | backtest
-REDBOT_TBANK__API_TOKEN=t.xxxx         # токен T-Invest (или через keyring)
-REDBOT_TBANK__ACCOUNT_ID=<sandbox account id>  # ID именно из sandbox API
-REDBOT_STORAGE__DATA_DIR=./data        # директория базы данных и архивов
-REDBOT_LOG_LEVEL=INFO                  # DEBUG | INFO | WARNING | ERROR
-REDBOT_WEB__HOST=127.0.0.1             # хост для Web GUI
-REDBOT_WEB__PORT=8000                  # порт для Web GUI
-REDBOT_WEB__SESSION_SECRET=...         # пароль доступа к Web GUI
+uv run redbot secrets set-token
+uv run redbot db bootstrap
+uv run redbot run                         # сохранённый режим; при первом старте fallback — sandbox
+uv run redbot run --account auto           # автоматический выбор счёта
+uv run redbot run --account <account-id>   # явный ID, проверяемый как открытый счёт
+uv run redbot run --mode sandbox --account auto
 ```
 
-Пример полного шаблона конфигурации доступен в `config/.env.example`.
+Без `--account`/`--account auto` приложение использует ID из переменной окружения (если явно задан), затем сохранённый выбор для текущего режима. Иначе оно выбирает открытый счёт: обычный брокерский выше ИИС, ИИС выше инвесткопилки. Если несколько счетов имеют одинаковый приоритет, CLI предлагает выбор; в неинтерактивном запуске передайте `--account <ID>`. Если sandbox-счетов нет, приложение создаёт один счёт без автоматического пополнения.
+
+Переменные `REDBOT_...` остаются необязательными overrides для автоматизированных развёртываний (например, `REDBOT_STORAGE__DATA_DIR`, `REDBOT_WEB__PORT` и секреты). Токен допускается только через системное хранилище секретов или явно переданную переменную окружения; не помещайте его в код, тесты, логи или отчёты. Пример advanced-настроек находится в `config/.env.example`.
 
 ---
 

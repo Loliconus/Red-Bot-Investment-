@@ -77,7 +77,8 @@ def test_audit_masks_account_id_and_never_logs_broker_token(
     assert response.status_code == 200
     assert writes == ["NEW_SECRET_BROKER_VALUE"]
     assert "NEW_SECRET_BROKER_VALUE" not in response.text
-    assert "NEW_SECRET_BROKER_VALUE" not in str(context.repository.gui_audit)  # type: ignore[attr-defined]
+    audit_entries = context.repository.gui_audit  # type: ignore[attr-defined]
+    assert "NEW_SECRET_BROKER_VALUE" not in str(audit_entries)
     assert old_id not in str(context.repository.gui_audit)  # type: ignore[attr-defined]
     assert response.headers["HX-Trigger"] == "token-saved"
     assert context.restart_required
@@ -87,9 +88,15 @@ def test_account_change_requires_all_three_steps_and_masks_audit(
     client: TestClient,
     context: AppContext,
 ) -> None:
+    from config.enums import ExecutionMode
+
+    context.mode = ExecutionMode.SANDBOX
     _, csrf = login(client)
     headers = {"X-Red-Bot-CSRF": csrf}
     account = "NEW_MANAGED_ACCOUNT_654321"
+    context.broker._accounts.append(  # type: ignore[attr-defined]
+        {"id": account, "name": "Selected account", "status": 2, "type": 1, "is_current": False}
+    )
     step2_url = "/risk/account/step/2"
     assert (
         client.post(step2_url, data={"new_account_id": account}, headers=headers).status_code == 422
@@ -108,7 +115,52 @@ def test_account_change_requires_all_three_steps_and_masks_audit(
     assert context.restart_required
     assert context.active_account_id != account  # действующий брокер не переназначен
     assert account not in str(context.repository.gui_audit)  # type: ignore[attr-defined]
-    assert context.repository.operational_values["managed_account_id"] == account  # type: ignore[attr-defined]
+    key = f"managed_account_id:{context.execution_mode.value}"
+    assert context.repository.operational_values[key] == account  # type: ignore[attr-defined]
+
+
+def test_settings_store_next_mode_and_open_account_without_switching_runtime(
+    client: TestClient,
+    context: AppContext,
+) -> None:
+    from config.enums import ExecutionMode
+
+    context.mode = ExecutionMode.SANDBOX
+    _, csrf = login(client)
+    headers = {"X-Red-Bot-CSRF": csrf}
+
+    page = client.get("/settings")
+    assert page.status_code == 200
+    assert "Настройки запуска" in page.text
+    assert "Автоматически" in page.text
+
+    response = client.post(
+        "/settings/mode",
+        data={"execution_mode": "live"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    operational_values = context.repository.operational_values  # type: ignore[attr-defined]
+    assert operational_values["execution_mode"] == "live"
+    assert context.execution_mode.value == "sandbox"
+
+    response = client.post(
+        "/settings/account",
+        data={"account_id": "fake-account"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    key = f"managed_account_id:{context.execution_mode.value}"
+    assert (
+        context.repository.operational_values[key] == "fake-account"  # type: ignore[attr-defined]
+    )
+
+    invalid = client.post(
+        "/settings/account",
+        data={"account_id": "not-an-open-id"},
+        headers=headers,
+    )
+    assert invalid.status_code == 400
 
 
 def test_countertrend_requires_type_to_confirm_in_form_and_legacy_api(
@@ -249,7 +301,9 @@ def test_ws_replay_delivers_ordered_deltas_and_reports_gaps(client: TestClient) 
         assert gap.status_code == 409
 
 
-def test_csv_export_isolation_between_sessions(db_fixture: AppContext) -> None:  # noqa: F811 — pytest fixture
+def test_csv_export_isolation_between_sessions(
+    db_fixture: AppContext,
+) -> None:  # noqa: F811 — pytest fixture
     with TestClient(create_app(db_fixture)) as a, TestClient(create_app(db_fixture)) as b:
         # Экспорт хранится в сессии GUI, не в URL с доступом для любого оператора.
         token_a, csrf = login(a)

@@ -16,6 +16,7 @@ class NavigationItem:
 
 NAVIGATION = (
     NavigationItem("control", "Пульт управления", "/control", "◉", "P0"),
+    NavigationItem("settings", "Настройки запуска", "/settings", "⚙", "P0"),
     NavigationItem("dashboard", "Дашборд", "/", "▦", "P1"),
     NavigationItem("chart", "График", "/chart", "⌁", "P1"),
     NavigationItem("instruments", "Инструменты и ТА", "/instruments", "◫", "P2"),

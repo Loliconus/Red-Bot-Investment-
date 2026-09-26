@@ -1,7 +1,6 @@
 # 05. Red-Bot-Investment — синтез и целевая архитектура
 
-Этот документ сводит выводы `01`–`04` в конкретный план: из чего состоит бот,
-в каком порядке он строится и что считается «готово».
+Этот документ сводит выводы `01`–`04` в план и содержит ранние архитектурные эскизы. Для фактической конфигурации, которая изменилась после реализации UI/CLI настроек, нормативны `plan/config.md` и `README.md`: режим и счёт сохраняются в DuckDB, `.env` для них не нужен.
 
 ---
 
@@ -15,8 +14,9 @@
    `t_tech.invest.utils`. Никакого `float` в расчётах заявок.
 4. **Каждая мутация идемпотентна.** Клиентский ключ сохраняется **до** сетевого
    вызова.
-5. **Режим задаётся конфигом.** `backtest` / `sandbox` / `live` — типизированное
-   значение, оно не зависит от данных, промта или ответа модели.
+5. **Режим задаётся оператором.** `backtest` / `sandbox` / `live` — типизированное
+   значение; default хранится в DuckDB и меняется через GUI/CLI, а не зависит от данных,
+   промта или ответа модели. Новый режим применяется после рестарта.
 6. **Источник истины по заявкам — брокер.** Внутреннее состояние всегда
    сверяется с ним.
 7. **Легаси не тащим.** Только `t_tech.invest.grpc`, только request-модели.
@@ -151,11 +151,14 @@ from red_bot.domain import Mode
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="RED_BOT_")
+    model_config = SettingsConfigDict(
+        env_file=".env",  # optional advanced overrides; no .env required for normal use
+        env_prefix="RED_BOT_",
+    )
 
-    mode: Mode = Mode.PAPER
+    mode: Mode = Mode.SANDBOX  # fallback; saved user default lives in DuckDB
     token: SecretStr
-    account_id: str
+    account_id: str = ""  # optional explicit override; otherwise resolve OPEN account from API
 
     # риск
     risk_per_trade_pct: Decimal = Field(default=Decimal("0.01"), gt=0, le=Decimal("0.02"))

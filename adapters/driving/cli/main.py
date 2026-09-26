@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
@@ -51,7 +53,8 @@ async def _bootstrap() -> None:
 
     settings = load_settings()
     configure_logging(settings.log_level.value, json_logs=settings.log_json)
-    context = await build_context(settings)
+    # Bootstrap/init must never open a sandbox account or touch a live account.
+    context = await build_context(settings, mode=ExecutionMode.BACKTEST)
     try:
         config = await bootstrap_database(context)
         typer.echo(f"БД инициализирована. Конфиг версии {config.version}.")
@@ -85,33 +88,66 @@ async def _stats() -> None:
 
 @app_cli.command("run")
 def run(
-    mode: str = typer.Option("sandbox", help="Контур: live | sandbox | backtest"),
+    mode: str | None = typer.Option(
+        None, help="Контур: live | sandbox | backtest (по умолчанию сохранённый)"
+    ),
+    account: str = typer.Option("auto", help="Счёт: auto или явный account ID"),
     host: str = typer.Option("", help="Хост Web GUI (по умолчанию из настроек)"),
     port: int = typer.Option(0, help="Порт Web GUI (по умолчанию из настроек)"),
     *,
     with_gui: bool = typer.Option(True, help="Поднять Web GUI"),
 ) -> None:
     """Запускает торговый цикл (и GUI, если не отключён)."""
-    asyncio.run(_run(mode, host or None, port or None, with_gui=with_gui))
+    asyncio.run(_run(mode, account, host or None, port or None, with_gui=with_gui))
 
 
-async def _run(mode: str, host: str | None, port: int | None, *, with_gui: bool) -> None:
+def _prompt_for_account(accounts: Sequence[dict[str, Any]]) -> str:
+    from application.use_cases.select_account import ACCOUNT_TYPE_LABELS
+
+    typer.echo("Найдено несколько открытых счетов равного приоритета:")
+    for index, account_item in enumerate(accounts, start=1):
+        account_type = int(account_item.get("type", 0))
+        label = ACCOUNT_TYPE_LABELS.get(account_type, "Другой")
+        typer.echo(
+            f"  {index}. {account_item.get('name') or 'Без названия'} — "
+            f"{label}; ID: {account_item['id']}"
+        )
+    if not sys.stdin.isatty():
+        raise typer.BadParameter(
+            "Выбор счёта требует интерактивного терминала; повторите запуск с --account <ID>"
+        )
+    return typer.prompt("Введите ID счёта из списка")
+
+
+async def _run(
+    mode: str | None,
+    account: str,
+    host: str | None,
+    port: int | None,
+    *,
+    with_gui: bool,
+) -> None:
     import uvicorn
 
     from adapters.driving.web.app import create_app
-    from application.composition import build_context
+    from application.composition import build_context, load_saved_execution_mode
 
-    resolved_mode = ExecutionMode(mode)
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    resolved_mode = ExecutionMode(mode) if mode else await load_saved_execution_mode(settings)
     if resolved_mode is ExecutionMode.LIVE:
         typer.confirm(
             "Вы запускаете бота в БОЕВОМ контуре на реальные деньги. Продолжить?",
             abort=True,
         )
 
-    settings = load_settings()
-    configure_logging(settings.log_level.value, json_logs=settings.log_json)
-
-    context = await build_context(settings, mode=resolved_mode)
+    context = await build_context(
+        settings,
+        mode=resolved_mode,
+        requested_account_id=None if account.strip().lower() == "auto" else account.strip(),
+        account_selector=_prompt_for_account,
+        remember_mode=True,
+    )
     settings.web.host = host or settings.web.host
     settings.web.port = port or settings.web.port
 

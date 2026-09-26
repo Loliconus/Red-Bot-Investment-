@@ -139,7 +139,8 @@
 ## Конфигурация (`config/`)
 
 * `settings.py` — Pydantic Settings, префикс `REDBOT_`, `extra="forbid"`,
-  fail-fast валидация (live без токена/счёта, insecure TLS в live).
+  проверка токена/TLS; account ID может отсутствовать и выбирается по открытым счетам через API.
+* Режим следующего запуска и раздельные live/sandbox account defaults хранятся в DuckDB `operational_settings`; `.env` для них не требуется.
 * `secrets_source.py` — keyring как источник токена с низшим приоритетом.
 * `logging_config.py` — structlog + редактирование секретов в логах.
 * `seed_defaults.py` — дефолты стратегии, **загружаемые в БД** при bootstrap.

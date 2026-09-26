@@ -77,7 +77,7 @@ def get_control_state(context: AppContext) -> ControlState:
         market_adapter=type(context.market_data).__name__,
         bootstrap={
             "token_source": "keyring / окружение (значение скрыто)",
-            "env": settings.execution_mode.value,
+            "env": context.execution_mode.value,
             "tls": "небезопасный dev-режим"
             if settings.tbank.insecure_tls_dev_only
             else "проверка включена",
@@ -85,7 +85,10 @@ def get_control_state(context: AppContext) -> ControlState:
                 context.storage_memory_limit_mb or settings.storage.duckdb_memory_limit_mb
             ),
             "threads": str(settings.storage.duckdb_threads),
-            "config_hint": "Для изменения bootstrap-параметров правьте config/ и перезапустите процесс.",
+            "config_hint": (
+                "Режим и счёт следующего запуска меняются в разделе «Настройки запуска»; "
+                "секреты и TLS остаются под отдельными ограничениями."
+            ),
         },
     )
 

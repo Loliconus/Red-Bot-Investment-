@@ -69,6 +69,30 @@ class TBankBrokerAdapter:
     def managed_account_id(self) -> str:
         return self._account_id
 
+    def configure_managed_account(self, account_id: str) -> None:
+        account_id = account_id.strip()
+        if not account_id:
+            raise ValueError("managed_account_id не может быть пустым")
+        self._account_id = account_id
+
+    async def get_accounts(self) -> list[dict[str, Any]]:
+        """Возвращает счета UsersService без секретных данных."""
+        from t_tech.invest.grpc.schemas import GetAccountsRequest
+
+        response = await retry_read_safe(
+            lambda: self._channel.services.users.get_accounts(request=GetAccountsRequest())
+        )
+        return [
+            {
+                "id": str(account.id),
+                "name": str(getattr(account, "name", "") or "Без названия"),
+                "status": int(getattr(account, "status", 0)),
+                "type": int(getattr(account, "type", 0)),
+                "is_current": str(account.id) == self._account_id,
+            }
+            for account in getattr(response, "accounts", []) or []
+        ]
+
     def _assert_managed_account(self, account_id: str) -> None:
         if not self._account_id:
             msg = "managed_account_id не задан: работа со счетами запрещена"

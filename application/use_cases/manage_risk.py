@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from application.composition import AppContext
+from application.use_cases.manage_app_config import save_preferred_account_id
 from application.use_cases.update_strategy_config import update_strategy_config
 from core.risk.cost_model import estimate_costs, min_viable_target_pct
 
@@ -90,6 +91,17 @@ def validate_account_change(context: AppContext, new_account_id: str) -> None:
 
 async def change_managed_account(context: AppContext, new_account_id: str) -> None:
     """Только staging для следующего полного запуска; брокер НЕ меняется на лету."""
+    if context.execution_mode is ExecutionMode.BACKTEST:
+        raise ValueError("Backtest не использует реальный брокерский счёт")
     validate_account_change(context, new_account_id)
-    await context.repository.set_operational_value("managed_account_id", new_account_id)
+    get_accounts = getattr(context.broker, "get_accounts", None)
+    if get_accounts is None:
+        raise ValueError("Адаптер текущего контура не поддерживает проверку счетов")
+    accounts = await get_accounts()
+    if not any(
+        str(account.get("id")) == new_account_id and int(account.get("status", 0)) == 2
+        for account in accounts
+    ):
+        raise ValueError("Можно сохранить только ID открытого счёта текущего контура")
+    await save_preferred_account_id(context.repository, context.execution_mode, new_account_id)
     context.restart_required = True

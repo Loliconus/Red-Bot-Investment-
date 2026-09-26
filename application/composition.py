@@ -23,6 +23,19 @@ import structlog
 from application.events import EventBus
 from application.kill_switch import KillSwitch
 from application.scheduler import Scheduler
+from application.use_cases.manage_app_config import (
+    complete_sandbox_account_creation,
+    load_default_mode,
+    load_preferred_account_id,
+    prepare_sandbox_account_creation,
+    save_default_mode,
+    save_preferred_account_id,
+)
+from application.use_cases.select_account import (
+    OPEN_ACCOUNT_STATUS,
+    AccountSelector,
+    resolve_managed_account_id,
+)
 from config.enums import ExecutionMode
 from config.settings import Settings
 from core.domain.entities import Instrument, PortfolioState, StrategyConfig
@@ -136,9 +149,19 @@ def build_storage(settings: Settings) -> tuple[RepositoryPort, ArchivePort]:
     return repository, archive
 
 
+async def load_saved_execution_mode(settings: Settings) -> ExecutionMode:
+    """Читает сохранённый режим до сетевых запросов CLI; иначе использует bootstrap fallback."""
+    repository, _ = build_storage(settings)
+    try:
+        return await load_default_mode(repository, settings.execution_mode)
+    finally:
+        await repository.aclose()
+
+
 async def build_tbank_adapters(
     settings: Settings,
     *,
+    mode: ExecutionMode = ExecutionMode.LIVE,
     managed_account_id: str | None = None,
 ) -> tuple[MarketDataPort, OrderExecutionPort]:
     """Создаёт адаптеры T-Invest. Импорт SDK — ленивый, только здесь."""
@@ -146,7 +169,7 @@ async def build_tbank_adapters(
     from adapters.driven.tbank.grpc_client import create_channel
     from adapters.driven.tbank.market_data_adapter import TBankMarketDataAdapter
 
-    channel = await create_channel(settings)
+    channel = await create_channel(settings, mode=mode)
     market_data: MarketDataPort = TBankMarketDataAdapter(channel)
     broker: OrderExecutionPort = TBankBrokerAdapter(
         channel, account_id=managed_account_id or settings.tbank.account_id
@@ -175,16 +198,33 @@ async def build_context(
     notifier: NotificationPort | None = None,
     instruments: list[Instrument] | None = None,
     config: StrategyConfig | None = None,
+    requested_account_id: str | None = None,
+    account_selector: AccountSelector | None = None,
+    remember_mode: bool = False,
 ) -> AppContext:
     """Собирает граф зависимостей под конкретный контур исполнения."""
-    mode = mode or settings.execution_mode
     clock = clock or SystemClock()
     event_bus = EventBus()
 
     repository, archive = build_storage(settings)
-    # Заявленная через GUI смена счёта вступает в силу только после рестарта.
-    account_override = await repository.get_operational_value("managed_account_id")
-    active_account_id = account_override or settings.tbank.account_id
+    if mode is None:
+        mode = await load_default_mode(repository, settings.execution_mode)
+    if mode is ExecutionMode.LIVE:
+        token = settings.tbank.api_token.get_secret_value().strip()
+        if not token or token == "changeme":
+            await repository.aclose()
+            raise ValueError("api_token не заполнен — боевой режим невозможен")
+    if remember_mode:
+        await save_default_mode(repository, mode)
+
+    # Явный CLI ID и bootstrap/ENV ID проверяются у брокера как открытые счета.
+    configured_account_id = (
+        requested_account_id.strip()
+        if requested_account_id and requested_account_id.strip()
+        else (settings.tbank.account_id.strip() or "")
+    )
+    preferred_account_id = await load_preferred_account_id(repository, mode)
+    active_account_id = configured_account_id
     memory_override = await repository.get_operational_value("duckdb_memory_limit_mb")
     active_memory_mb = (
         int(memory_override) if memory_override else settings.storage.duckdb_memory_limit_mb
@@ -194,25 +234,57 @@ async def build_context(
 
     if mode is ExecutionMode.BACKTEST:
         market_data, broker = build_backtest_adapters(settings)
-    elif mode is ExecutionMode.SANDBOX:
-        from adapters.driven.sandbox.sandbox_adapter import create_sandbox_adapters
+        active_account_id = active_account_id or "backtest"
+    else:
+        if mode is ExecutionMode.SANDBOX:
+            from adapters.driven.sandbox.sandbox_adapter import create_sandbox_adapters
 
-        market_data, broker = await create_sandbox_adapters(
-            settings, managed_account_id=active_account_id
-        )
+            market_data, broker = await create_sandbox_adapters(
+                settings, managed_account_id=configured_account_id
+            )
+        else:
+            market_data, broker = await build_tbank_adapters(
+                settings,
+                mode=mode,
+                managed_account_id=configured_account_id,
+            )
         try:
-            # Sandbox никогда не переходит в симулятор незаметно. Без соединения,
-            # реального счета или ответа API запуск прерывается.
-            ensure_account = getattr(broker, "ensure_managed_sandbox_account")
-            active_account_id = await ensure_account()
-            await repository.set_operational_value("managed_account_id", active_account_id)
+            known_accounts: list[dict[str, Any]] | None = None
+            if mode is ExecutionMode.SANDBOX:
+                get_accounts = getattr(broker, "get_accounts", None)
+                if get_accounts is None:
+                    raise RuntimeError("Sandbox адаптер не поддерживает список счетов")
+                known_accounts = await get_accounts()
+                has_open_account = any(
+                    int(account.get("status", 0)) == OPEN_ACCOUNT_STATUS
+                    for account in known_accounts
+                )
+                # Маркер фиксируется до неидемпотентного открытия: при неопределённом
+                # результате следующий запуск не создаст второй sandbox-счёт вслепую.
+                await prepare_sandbox_account_creation(
+                    repository,
+                    has_open_account=has_open_account,
+                    explicit_account_id=configured_account_id or None,
+                )
+
+            # Сначала проверяем явный ID, затем mode-specific saved default, затем
+            # типы счетов. При пустом sandbox списке открывается только счёт — без pay-in.
+            active_account_id = await resolve_managed_account_id(
+                broker,
+                mode=mode,
+                requested_account_id=configured_account_id or None,
+                preferred_account_id=preferred_account_id,
+                selector=account_selector,
+                accounts=known_accounts,
+            )
+            configure_account = getattr(broker, "configure_managed_account", None)
+            if configure_account is not None:
+                configure_account(active_account_id)
+            await save_preferred_account_id(repository, mode, active_account_id)
         except BaseException:
             await market_data.aclose()
+            await repository.aclose()
             raise
-    else:
-        market_data, broker = await build_tbank_adapters(
-            settings, managed_account_id=active_account_id
-        )
 
     kill_switch = KillSwitch(
         clock=clock,
@@ -230,10 +302,16 @@ async def build_context(
 
     initial_portfolio: PortfolioState | None = None
     if mode is ExecutionMode.SANDBOX:
-        get_portfolio = getattr(broker, "get_portfolio")
-        initial_portfolio = await get_portfolio()
-        if initial_portfolio is None:
-            raise RuntimeError("Sandbox API не вернул портфель выбранного счета")
+        try:
+            get_portfolio = getattr(broker, "get_portfolio")
+            initial_portfolio = await get_portfolio()
+            if initial_portfolio is None:
+                raise RuntimeError("Sandbox API не вернул портфель выбранного счета")
+            await complete_sandbox_account_creation(repository)
+        except BaseException:
+            await market_data.aclose()
+            await repository.aclose()
+            raise
     else:
         if hasattr(broker, "get_portfolio"):
             try:

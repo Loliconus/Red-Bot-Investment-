@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="page-heading"><div><div class="eyebrow">НАСТРОЙКИ / СЛЕДУЮЩИЙ ЗАПУСК <span class="eyebrow-line"></span> ПРИОРИТЕТ P0</div><h1>Настройки запуска</h1><p>Режим и счёт сохраняются локально в DuckDB. Активный контур не переключается на лету.</p></div><span class="heading-meta">АКТИВЕН / {{ active_mode.value|upper }}</span></section>
+<div id="settings-status" aria-live="polite"></div>
+<div class="two-column">
+  <section class="panel"><div class="panel-head"><div><div class="eyebrow">EXECUTION MODE</div><h2>Режим следующего запуска</h2></div><span class="pill neutral">СЕЙЧАС: {{ active_mode.value|upper }}</span></div>
+    <p class="panel-copy">Сохранённый режим: <strong>{{ saved_mode.value|upper }}</strong>. Он будет использован командой <code>redbot run</code> без флага <code>--mode</code>. Для применения перезапустите приложение.</p>
+    <form hx-post="/settings/mode" hx-target="#settings-status" hx-swap="innerHTML" class="token-form">
+      <label>Контур<select name="execution_mode" required>{% for item in execution_modes %}<option value="{{ item.value }}" {% if item == saved_mode %}selected{% endif %}>{{ item.value|upper }}</option>{% endfor %}</select></label>
+      <button class="button primary" type="submit">Сохранить режим</button>
+    </form>
+    <p class="panel-note">LIVE работает с реальными деньгами. Выбор LIVE при сохранении не запускает торговлю; при старте CLI всё равно запросит подтверждение.</p>
+  </section>
+  <section class="panel"><div class="panel-head"><div><div class="eyebrow">BROKER ACCOUNT</div><h2>Счёт активного контура</h2></div><span class="pill neutral">{{ active_mode.value|upper }}</span></div>
+    {% if active_mode.value == 'backtest' %}
+      <p class="panel-note">Backtest использует симулятор и не привязан к брокерскому счёту. Настроить account default можно, когда активен live или sandbox контур.</p>
+    {% else %}
+      <p class="panel-copy">Настройка относится к текущему контуру и применяется после перезапуска. «Автоматически» проверяет открытые счета и предпочитает обычный брокерский счёт, затем ИИС, затем инвесткопилку.</p>
+      {% if accounts_error %}<p class="state-label state-degraded"><i></i>{{ accounts_error }}</p>{% endif %}
+      <form hx-post="/settings/account" hx-target="#settings-status" hx-swap="innerHTML" class="token-form">
+        <label>Открытый счёт<select name="account_id"><option value="auto" {% if selected_account == 'auto' %}selected{% endif %}>Автоматически</option>{% for account in accounts %}<option value="{{ account.id }}" {% if selected_account == account.id %}selected{% endif %}>{{ account.name }} — {{ account_type_labels.get(account.type, 'Другой') }} · {{ account.id }}</option>{% endfor %}</select></label>
+        <button class="button primary" type="submit">Сохранить счёт</button>
+      </form>
+      {% if not accounts and not accounts_error %}<p class="panel-note">Открытых счетов не найдено. Если следующим выбран sandbox, приложение при старте автоматически откроет один счёт; пополнение не выполняется.</p>{% endif %}
+    {% endif %}
+  </section>
+</div>
+<section class="panel"><div class="panel-head"><div><div class="eyebrow">ЛОКАЛЬНАЯ КОНФИГУРАЦИЯ</div><h2>Без обязательного .env</h2></div><span class="pill neutral">DUCKDB + KEYRING</span></div><p class="panel-copy">Режим и выбор счёта хранятся в <code>data/redbot.duckdb</code>. Токен остаётся только в системном хранилище секретов. Переменные окружения допустимы как явные overrides для автоматизированных развёртываний, но для обычной настройки не нужны.</p></section>
+{% endblock %}

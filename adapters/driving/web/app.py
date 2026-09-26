@@ -20,6 +20,7 @@ from adapters.driving.web.render import render_page
 from adapters.driving.web.routers import (
     admin,
     analysis,
+    app_settings,
     backtest,
     chart,
     config,
@@ -293,6 +294,7 @@ def create_app(
     app.include_router(legacy)
     for router in (
         control.router,
+        app_settings.router,
         dashboard.router,
         instruments.router,
         risk.router,

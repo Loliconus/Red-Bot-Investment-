@@ -35,9 +35,12 @@ async def get_account_overview(context: AppContext) -> dict[str, Any]:
     cash = portfolio.available_cash if portfolio else ZERO
     positions_value = portfolio.positions_value if portfolio else ZERO
 
-    # Получаем список реальных счетов (для песочницы).
+    # Один интерфейс для live и sandbox; старый fake adapter остаётся совместимым.
     accounts: list[dict[str, Any]] = []
-    if hasattr(context.broker, "get_sandbox_accounts"):
+    get_accounts = getattr(context.broker, "get_accounts", None)
+    if get_accounts is not None:
+        accounts = await get_accounts()
+    elif hasattr(context.broker, "get_sandbox_accounts"):
         accounts = await context.broker.get_sandbox_accounts()
 
     if not accounts and context.active_account_id and not is_sandbox:
@@ -45,7 +48,7 @@ async def get_account_overview(context: AppContext) -> dict[str, Any]:
             {
                 "id": context.active_account_id,
                 "name": "Текущий счёт",
-                "status": 1,
+                "status": 2,
                 "type": 1,
                 "is_current": True,
             }
@@ -104,16 +107,30 @@ async def switch_sandbox_account(context: AppContext, account_id: str) -> None:
     if not account_id:
         raise ValueError("Идентификатор счёта не может быть пустым")
 
+    get_sandbox_accounts = getattr(context.broker, "get_sandbox_accounts", None)
+    if get_sandbox_accounts is None:
+        raise RuntimeError("Текущий адаптер не поддерживает список sandbox-счетов")
+    accounts = await get_sandbox_accounts()
+    if not any(
+        item.get("id") == account_id and int(item.get("status", 0)) == 2 for item in accounts
+    ):
+        raise ValueError("Можно переключиться только на открытый sandbox-счёт")
+
     context.managed_account_id = account_id
     broker_obj: Any = context.broker
-    if hasattr(broker_obj, "_account_id"):
+    configure = getattr(broker_obj, "configure_managed_account", None)
+    if configure is not None:
+        configure(account_id)
+    elif hasattr(broker_obj, "_account_id"):
         broker_obj._account_id = account_id  # noqa: SLF001
     if hasattr(broker_obj, "account_id"):
         broker_obj.account_id = account_id
 
-    await context.repository.set_operational_value("managed_account_id", account_id)
+    from application.use_cases.manage_app_config import save_preferred_account_id
+
+    await save_preferred_account_id(context.repository, context.execution_mode, account_id)
     await refresh_portfolio(context)
-    logger.info("sandbox_account_switched", account_id=account_id)
+    logger.info("sandbox_account_switched")
 
 
 async def close_sandbox_account(context: AppContext, account_id: str) -> None:
@@ -130,12 +147,19 @@ async def close_sandbox_account(context: AppContext, account_id: str) -> None:
         accounts: list[dict[str, Any]] = []
         if hasattr(context.broker, "get_sandbox_accounts"):
             accounts = await context.broker.get_sandbox_accounts()
-        other = next((a["id"] for a in accounts if a["id"] != account_id), None)
+        other = next(
+            (
+                a["id"]
+                for a in accounts
+                if a["id"] != account_id and int(a.get("status", 0)) == 2
+            ),
+            None,
+        )
         if other:
             await switch_sandbox_account(context, other)
         else:
             await create_sandbox_account(context, "Основной счёт")
-    logger.info("sandbox_account_closed", account_id=account_id)
+    logger.info("sandbox_account_closed")
 
 
 async def refresh_portfolio(context: AppContext) -> PortfolioState:

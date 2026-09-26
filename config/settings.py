@@ -1,8 +1,8 @@
 """Единственная точка правды bootstrap-конфигурации.
 
 Принципы:
-* fail-fast — процесс падает на инициализации ``Settings``, до первого сетевого
-  вызова, если конфигурация неполна или небезопасна;
+* fail-fast — процесс падает на инициализации ``Settings`` при небезопасной
+  конфигурации; account ID может быть пустым и разрешается через брокерский API;
 * ``extra="forbid"`` — опечатка в ``.env`` это ошибка, а не молчаливый игнор;
 * секреты — только ``SecretStr``;
 * ``Settings`` неизменяем в течение жизни процесса и не перечитывается.
@@ -28,7 +28,9 @@ class TBankSettings(BaseModel):
     api_token: SecretStr
     account_id: str = Field(
         default="",
-        description="managed_account_id — единственный счёт, с которым разрешена торговля",
+        description=(
+            "Необязательный явный account ID override; иначе приложение выберет открытый счёт"
+        ),
     )
     grpc_target_live: str = "invest-public-api.tbank.ru:443"
     grpc_target_sandbox: str = "sandbox-invest-public-api.tbank.ru:443"
@@ -127,12 +129,6 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _forbid_missing_account_in_live(self) -> Settings:
-        if self.execution_mode is ExecutionMode.LIVE and not self.tbank.account_id.strip():
-            raise ValueError("account_id обязателен для режима LIVE")
-        return self
-
-    @model_validator(mode="after")
     def _forbid_placeholder_token_in_live(self) -> Settings:
         if self.execution_mode is not ExecutionMode.LIVE:
             return self
@@ -179,8 +175,9 @@ def reset_settings_cache() -> None:
     _settings_instance = None
 
 
-def target_for_mode(settings: Settings) -> str:
-    """Возвращает gRPC-target для текущего контура исполнения."""
-    if settings.execution_mode is ExecutionMode.LIVE:
+def target_for_mode(settings: Settings, mode: ExecutionMode | None = None) -> str:
+    """Возвращает gRPC-target для текущего или явно разрешённого execution mode."""
+    resolved_mode = mode or settings.execution_mode
+    if resolved_mode is ExecutionMode.LIVE:
         return settings.tbank.grpc_target_live
     return settings.tbank.grpc_target_sandbox
