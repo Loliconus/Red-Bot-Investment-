@@ -56,7 +56,7 @@ Web GUI доступен в браузере по адресу: **`http://localh
 | **Торговые инструменты** | `data/redbot.duckdb` (таблица `instruments`) | Хранит список добавленных бумаг: `uid` (FIGI/UID инструмента), `ticker` (тикер, например `SBER`), `class_code` (`TQBR`), `lot_size` (размер лота), `currency` (`RUB`). Дефолты при первом старте: `config/seed_defaults.py`. Встроенный справочник: `config/catalog.py`. |
 | **Флаги активности инструментов** | `data/redbot.duckdb` (таблица `operational_state`) | Ключи вида `instrument:<uid>:enabled` со значениями `true`/`false`. |
 | **Настройки ТА и риск-параметры** | `data/redbot.duckdb` (таблица `strategy_configs`) | Версионируемые записи конфигураций: `risk_per_trade_pct` (% риска на сделку), `min_viable_target_multiplier` (множитель цели), `max_position_notional`, веса модулей Confluence-скоринга (`confluence_weights`). Начальные параметры индикаторов (SMA, EMA, RSI, MACD, Bollinger, ATR, VWAP, OBV): `config/seed_defaults.py`. |
-| **Активный торговый счёт** | `data/redbot.duckdb` (таблица `operational_state`) | Ключ `managed_account_id`. В `.env` может быть предзадан через `REDBOT_TBANK__ACCOUNT_ID`. В контуре песочницы поддерживается переключение счетов на лету. |
+| **Активный торговый счёт** | `data/redbot.duckdb` (таблица `operational_settings`) | Ключ `managed_account_id`; он имеет приоритет над `REDBOT_TBANK__ACCOUNT_ID`. Для sandbox указывайте ID sandbox-счёта, а не live-счёта. В контуре песочницы поддерживается переключение счетов на лету. |
 | **Рыночные данные (Hot-слой)** | `data/redbot.duckdb` | Таблицы `candles` (свечи D1, H1, M1), `orderbooks` (снимки стакана), `trades`, `positions`, `trade_plans`, `snapshots`, `audit_events`. |
 | **Холодный архив (Cold-слой)** | Директория `data/archive/` | Сжатые Parquet-файлы с разбивкой по слоям хранения (`hot/`, `warm/`, `cold/`) для долгосрочного анализа и бэктестинга. |
 | **TLS-сертификаты доверия** | `config/certs/russian_trusted_ca.pem` | Корневой сертификат НУЦ Минцифры РФ для защищённого соединения с серверами T-Invest API. |
@@ -88,7 +88,7 @@ Web GUI доступен в браузере по адресу: **`http://localh
 ```bash
 REDBOT_EXECUTION_MODE=sandbox          # sandbox | live | backtest
 REDBOT_TBANK__API_TOKEN=t.xxxx         # токен T-Invest (или через keyring)
-REDBOT_TBANK__ACCOUNT_ID=2000000000    # managed_account_id
+REDBOT_TBANK__ACCOUNT_ID=<sandbox account id>  # ID именно из sandbox API
 REDBOT_STORAGE__DATA_DIR=./data        # директория базы данных и архивов
 REDBOT_LOG_LEVEL=INFO                  # DEBUG | INFO | WARNING | ERROR
 REDBOT_WEB__HOST=127.0.0.1             # хост для Web GUI

@@ -82,7 +82,6 @@ def verify_sdk_schema() -> list[str]:
         CancelOrderRequest,
         CandleInstrument,
         CandleInterval,
-        CloseSandboxAccountRequest,
         GetAccountsRequest,
         GetCandlesRequest,
         GetOrderBookRequest,
@@ -92,17 +91,20 @@ def verify_sdk_schema() -> list[str]:
         InstrumentsRequest,
         InstrumentStatus,
         MarketDataServerSideStreamRequest,
-        OpenSandboxAccountRequest,
         OrderDirection,
         OrderExecutionReportStatus,
         OrderIdType,
         OrderType,
         PortfolioRequest,
         PostOrderRequest,
-        SandboxPayInRequest,
         SubscribeCandlesRequest,
         SubscriptionAction,
         SubscriptionInterval,
+    )
+    from t_tech.invest.grpc.sandbox import (
+        CloseSandboxAccountRequest,
+        OpenSandboxAccountRequest,
+        SandboxPayInRequest,
     )
 
     request_types = {
@@ -223,7 +225,7 @@ def verify_sdk_schema() -> list[str]:
     )
 
     # Response fields consumed by adapters/mappers are part of the contract too.
-    from t_tech.invest.grpc import schemas
+    from t_tech.invest.grpc import schemas, sandbox as sandbox_schemas
 
     response_fields = {
         "GetAccountsResponse": {"accounts"},
@@ -254,8 +256,10 @@ def verify_sdk_schema() -> list[str]:
         "InstrumentResponse": {"instrument"},
         "SharesResponse": {"instruments"},
     }
+    sandbox_response_types = {"OpenSandboxAccountResponse", "SandboxPayInResponse"}
     for type_name, expected_fields in response_fields.items():
-        response_type = getattr(schemas, type_name)
+        schema_module = sandbox_schemas if type_name in sandbox_response_types else schemas
+        response_type = getattr(schema_module, type_name)
         actual_fields = set(_field_numbers(response_type))
         missing = expected_fields - actual_fields
         if missing:

@@ -96,7 +96,11 @@ class SandboxBrokerAdapter(TBankBrokerAdapter):
         accounts = await self.get_sandbox_accounts()
         if self._account_id:
             if not any(account["id"] == self._account_id for account in accounts):
-                raise ValueError("Настроенный sandbox account_id отсутствует среди счетов API")
+                raise ValueError(
+                    "Настроенный account_id не найден среди sandbox-счетов. Проверьте "
+                    "REDBOT_TBANK__ACCOUNT_ID и сохранённый managed_account_id: нужен ID "
+                    "именно из sandbox API, а не live-счёта"
+                )
             return self._account_id
         if accounts:
             self._account_id = str(accounts[0]["id"])
@@ -106,7 +110,7 @@ class SandboxBrokerAdapter(TBankBrokerAdapter):
 
     async def open_sandbox_account(self, name: str = "Red-Bot Sandbox") -> str:
         """Создаёт счёт через SandboxService. Запрос не поддерживает идемпотентность."""
-        from t_tech.invest.grpc.schemas import OpenSandboxAccountRequest
+        from t_tech.invest.grpc.sandbox import OpenSandboxAccountRequest
 
         response = await self._channel.services.sandbox.open_sandbox_account(
             request=OpenSandboxAccountRequest(name=name)
@@ -119,7 +123,7 @@ class SandboxBrokerAdapter(TBankBrokerAdapter):
 
     async def close_sandbox_account(self, account_id: str) -> None:
         """Закрывает счёт в sandbox API ровно одним запросом."""
-        from t_tech.invest.grpc.schemas import CloseSandboxAccountRequest
+        from t_tech.invest.grpc.sandbox import CloseSandboxAccountRequest
 
         request = CloseSandboxAccountRequest(account_id=account_id)
         await self._channel.services.sandbox.close_sandbox_account(request=request)
@@ -129,7 +133,7 @@ class SandboxBrokerAdapter(TBankBrokerAdapter):
         self, account_id: str, amount: Decimal, currency: str = "rub"
     ) -> Decimal:
         """Пополняет sandbox API без повторов: у SandboxPayIn нет idempotency key."""
-        from t_tech.invest.grpc.schemas import SandboxPayInRequest
+        from t_tech.invest.grpc.sandbox import SandboxPayInRequest
         from t_tech.invest.utils import decimal_to_money
 
         if amount <= 0:
