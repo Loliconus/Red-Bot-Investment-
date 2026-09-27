@@ -119,6 +119,7 @@ async def test_replay_pipeline_produces_decision(tmp_path: Any) -> None:
 async def test_replay_pipeline_can_execute_and_close(tmp_path: Any) -> None:
     context = _build_context(tmp_path)
     instrument = context.instruments[0]
+    await context.repository.save_instrument(instrument)
 
     outcome = await make_decision(context, instrument)
     if not outcome.should_execute:
@@ -159,6 +160,8 @@ async def test_monitor_closes_by_hard_stop(tmp_path: Any) -> None:
         status=TradePlanStatus.ACTIVE,
         quantity_lots=2,
     )
+    # Инструмент должен лежать в корзине: иначе план «сирота» и не читается.
+    await context.repository.save_instrument(instrument)
     await context.repository.save_trade_plan(plan)
 
     # Цена пробила стоп.
@@ -209,6 +212,8 @@ async def test_time_exit_closes_stale_idea(tmp_path: Any) -> None:
         status=TradePlanStatus.ACTIVE,
         quantity_lots=1,
     )
+    # Инструмент должен лежать в корзине: иначе план «сирота» и не читается.
+    await context.repository.save_instrument(instrument)
     await context.repository.save_trade_plan(plan)
 
     report = await monitor_positions(context)

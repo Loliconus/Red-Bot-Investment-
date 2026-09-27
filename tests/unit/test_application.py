@@ -230,6 +230,7 @@ async def test_decide_exit_hold_when_nothing_triggered(context: object, instrume
 
 async def test_monitor_positions_closes_and_persists(context: object, instrument: object) -> None:
     plan = _plan_for_monitor(context, entry="100", stop="95")
+    await context.repository.save_instrument(instrument)
     await context.repository.save_trade_plan(plan)
     _set_price(context, instrument, Decimal("80"))
 

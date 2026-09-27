@@ -124,6 +124,61 @@ async def _catalog_refresh(types: str) -> None:
         await context.aclose()
 
 
+@db_app.command("doctor")
+def db_doctor(
+    repair: bool = typer.Option(
+        False, "--repair", help="Закрыть открытые планы без инструмента в корзине"
+    ),
+) -> None:
+    """Проверяет согласованность инструментов, каталога и торговых планов."""
+    asyncio.run(_doctor(repair))
+
+
+async def _doctor(repair: bool) -> None:
+    from application.composition import build_context
+    from application.use_cases.manage_instrument_catalog import catalog_status
+    from application.use_cases.reconcile_trade_plans import (
+        reconcile_orphaned_trade_plans,
+        suspicious_instruments,
+    )
+
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    # Диагностика read-only по хранилищу: контур backtest не открывает счетов.
+    context = await build_context(settings, mode=ExecutionMode.BACKTEST)
+    try:
+        problems = 0
+        for instrument in suspicious_instruments(list(context.instruments)):
+            problems += 1
+            typer.echo(
+                f"! инструмент {instrument.ticker}: uid '{instrument.uid}' не похож на "
+                "instrument_uid (UUID). Добавьте инструмент заново по тикеру."
+            )
+        status = await catalog_status(context)
+        typer.echo(
+            f"Каталог инструментов: {status['count']} записей, "
+            f"обновлён {status['updated_at'] or 'никогда'}"
+            f"{' (устарел)' if status['stale'] else ''}"
+        )
+        if repair:
+            closed = await reconcile_orphaned_trade_plans(context)
+            problems += len(closed)
+            typer.echo(f"Закрыто открытых планов без инструмента: {len(closed)}")
+        else:
+            orphans = await context.repository.list_orphaned_trade_plan_ids()
+            problems += len(orphans)
+            typer.echo(
+                f"Открытых планов без инструмента в корзине: {len(orphans)} "
+                "(закройте их: redbot db doctor --repair)"
+            )
+        if problems == 0:
+            typer.echo("Замечаний нет: инструменты, каталог и планы согласованы.")
+        else:
+            typer.echo(f"Всего замечаний: {problems}")
+    finally:
+        await context.aclose()
+
+
 @app_cli.command("run")
 def run(
     mode: str | None = typer.Option(

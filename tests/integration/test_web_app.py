@@ -426,3 +426,63 @@ async def test_sandbox_account_web_endpoints(client: Any, context: AppContext) -
     resp_ref = client.post("/risk/account/sandbox/refresh", headers=headers)
     assert resp_ref.status_code == 200
     assert "обновлены" in resp_ref.text
+
+
+def _legacy_plan(instrument_uid: str) -> Any:
+    """План со старым идентификатором вместо ``instrument_uid`` (как в инциденте)."""
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from core.domain.entities import (
+        Instrument,
+        InvalidationRule,
+        ReasoningStep,
+        TradePlan,
+        TradeThesis,
+    )
+    from core.domain.enums import Timeframe, TradePlanStatus, Trend
+
+    return TradePlan(
+        id=uuid4(),
+        instrument=Instrument(uid=instrument_uid, ticker="GMKN", class_code="TQBR", lot_size=1),
+        entry_price=Decimal("100"),
+        hard_stop_price=Decimal("95"),
+        target_price=Decimal("120"),
+        thesis=TradeThesis(
+            reasoning_chain=(ReasoningStep(module="t", signal="s", weight=Decimal("1")),),
+            confluence_score=Decimal("0.8"),
+            timeframe_bias={Timeframe.D1: Trend.UP},
+        ),
+        thesis_invalidation=InvalidationRule(
+            description="инцидент", check=lambda s: False, code="legacy"
+        ),
+        max_holding_time=timedelta(hours=72),
+        created_at=datetime.now(tz=UTC),
+        status=TradePlanStatus.ACTIVE,
+        quantity_lots=1,
+    )
+
+
+async def test_dashboard_survives_plan_without_instrument(
+    duckdb_client: Any, duckdb_context: AppContext
+) -> None:
+    """Регресс инцидента: план с FIGI в instrument_uid ронял `/` и мониторинг.
+
+    Раньше ``get_open_trade_plans`` бросал ValueError, поэтому дашборд отдавал
+    HTTP 500, а цикл position_monitor перезапускался раз в секунду. Проверяем
+    на реальном DuckDB: именно там падало чтение планов.
+    """
+    token = _login(duckdb_client)
+    instrument = seed_instrument(uid="uid-sber", ticker="SBER", lot_size=10)
+    await duckdb_context.repository.save_instrument(instrument)
+    duckdb_context.instruments.append(instrument)
+    await duckdb_context.repository.save_trade_plan(_legacy_plan(instrument.uid))
+    await duckdb_context.repository.save_trade_plan(_legacy_plan("BBG004731489"))
+
+    response = duckdb_client.get("/")
+
+    assert response.status_code == 200, response.text
+    plans = duckdb_client.get("/api/trading/plans", headers={"X-Red-Bot-Token": token})
+    assert plans.status_code == 200
+    assert len(plans.json()) == 1

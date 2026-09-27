@@ -213,7 +213,14 @@ async def monitor_positions(ctx: AppContext) -> MonitoringReport:
     exits: list[ExitDecision] = []
 
     for plan in active:
-        decision = await decide_exit(ctx, plan)
+        try:
+            decision = await decide_exit(ctx, plan)
+        except Exception:
+            # Один проблемный план не должен останавливать мониторинг всех
+            # остальных позиций: иначе позиция живёт без контроля выхода.
+            # План остаётся открытым — ошибка видна в логе и требует разбора.
+            logger.exception("monitor_plan_failed", plan_id=str(plan.id), uid=plan.instrument.uid)
+            continue
         if not decision.should_exit or decision.reason is None:
             continue
 

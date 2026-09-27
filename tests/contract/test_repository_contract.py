@@ -34,6 +34,10 @@ def _instrument() -> Any:
     return make_instrument()
 
 
+def _instrument_with(uid: str, *, ticker: str = "GMKN") -> Any:
+    return make_instrument(uid=uid, ticker=ticker)
+
+
 def _plan(instrument: Any, *, status: TradePlanStatus = TradePlanStatus.ACTIVE) -> TradePlan:
     thesis = TradeThesis(
         reasoning_chain=(ReasoningStep(module="t", signal="s", weight=Decimal("1")),),
@@ -227,6 +231,55 @@ async def test_open_plans_exclude_closed(repository: Any) -> None:
     open_ids = {p.id for p in await repository.get_open_trade_plans()}
     assert opened.id in open_ids
     assert closed.id not in open_ids
+
+
+async def test_open_plans_skip_instrument_removed_from_basket(repository: Any) -> None:
+    """План без инструмента не роняет чтение: он просто пропускается.
+
+    Регресс на падение мониторинга позиций и дашборда: план со старым FIGI
+    вместо ``instrument_uid`` ломал ``get_open_trade_plans`` ValueError.
+    """
+    kept = _instrument()
+    removed = _instrument_with("uid-gmkn")
+    await repository.save_instrument(kept)
+    await repository.save_instrument(removed)
+    healthy = _plan(kept)
+    orphaned = _plan(removed)
+    await repository.save_trade_plan(healthy)
+    await repository.save_trade_plan(orphaned)
+    await repository.delete_instrument(removed.uid)
+
+    assert [p.id for p in await repository.get_open_trade_plans()] == [healthy.id]
+    assert await repository.get_trade_plan(orphaned.id) is None
+
+
+async def test_orphaned_plans_are_listed_and_closed_with_reason(repository: Any) -> None:
+    instrument = _instrument()
+    await repository.save_instrument(instrument)
+    healthy = _plan(instrument)
+    orphaned = _plan(_instrument_with("BBG004731489"))
+    already_closed = _plan(_instrument_with("BBG004730N88"), status=TradePlanStatus.CLOSED_TARGET)
+    for plan in (healthy, orphaned, already_closed):
+        await repository.save_trade_plan(plan)
+
+    assert await repository.list_orphaned_trade_plan_ids() == (str(orphaned.id),)
+
+    closed = await repository.close_orphaned_trade_plans("инструмент отсутствует в корзине")
+
+    assert closed == (str(orphaned.id),)
+    assert await repository.list_orphaned_trade_plan_ids() == ()
+    assert healthy.id in {p.id for p in await repository.get_open_trade_plans()}
+    assert already_closed.status is TradePlanStatus.CLOSED_TARGET
+    assert already_closed.rejection_reason is None
+
+    # Причина и момент закрытия сохранены: план снова читается, как только
+    # инструмент возвращается в корзину.
+    await repository.save_instrument(orphaned.instrument)
+    restored = await repository.get_trade_plan(orphaned.id)
+    assert restored is not None
+    assert restored.status is TradePlanStatus.CLOSED_MANUAL
+    assert restored.rejection_reason == "инструмент отсутствует в корзине"
+    assert restored.closed_at is not None
 
 
 async def test_market_snapshot_round_trip(repository: Any) -> None:

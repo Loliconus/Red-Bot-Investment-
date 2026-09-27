@@ -27,7 +27,7 @@ from core.domain.entities import (
     StrategyConfig,
     TradePlan,
 )
-from core.domain.enums import OrderStatus, Timeframe
+from core.domain.enums import OrderStatus, Timeframe, TradePlanStatus
 from core.domain.value_objects import OHLCV, OrderbookSnapshot
 from core.journal.hypothesis_engine import Hypothesis
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
@@ -299,10 +299,35 @@ class InMemoryRepository:
         self.plans[plan.id] = plan
 
     async def get_trade_plan(self, plan_id: UUID) -> TradePlan | None:
-        return self.plans.get(plan_id)
+        plan = self.plans.get(plan_id)
+        # Как и в DuckDB: без инструмента в корзине план не материализуется.
+        if plan is None or plan.instrument.uid not in self.instruments:
+            return None
+        return plan
 
     async def get_open_trade_plans(self) -> list[TradePlan]:
-        return [p for p in self.plans.values() if p.is_open]
+        # Как и в DuckDB: план без инструмента в корзине пропускаем, а не роняем
+        # читателя — «сирота» не должна ломать мониторинг и дашборд.
+        return [
+            p for p in self.plans.values() if p.is_open and p.instrument.uid in self.instruments
+        ]
+
+    async def close_orphaned_trade_plans(self, reason: str) -> tuple[str, ...]:
+        closed: list[str] = []
+        for plan in self.plans.values():
+            if not plan.is_open or plan.instrument.uid in self.instruments:
+                continue
+            plan.close(TradePlanStatus.CLOSED_MANUAL, closed_at=datetime.now(UTC))
+            plan.rejection_reason = reason
+            closed.append(str(plan.id))
+        return tuple(closed)
+
+    async def list_orphaned_trade_plan_ids(self) -> tuple[str, ...]:
+        return tuple(
+            str(plan.id)
+            for plan in self.plans.values()
+            if plan.is_open and plan.instrument.uid not in self.instruments
+        )
 
     async def get_trade_history(
         self, instrument: Instrument | None, since: datetime

@@ -67,6 +67,17 @@ class RepositoryPort(Protocol):
 
     async def get_open_trade_plans(self) -> list[TradePlan]: ...
 
+    async def close_orphaned_trade_plans(self, reason: str) -> tuple[str, ...]:
+        """Закрывает открытые планы, чей инструмент исчез из корзины.
+
+        Возвращает id затронутых планов. План без инструмента нельзя ни
+        исполнять, ни мониторить (нет UID для заявок и свечей), но один такой
+        план не должен ронять чтение всех остальных.
+        """
+
+    async def list_orphaned_trade_plan_ids(self) -> tuple[str, ...]:
+        """Id открытых планов, чей инструмент отсутствует в корзине."""
+
     async def get_trade_history(
         self,
         instrument: Instrument | None,

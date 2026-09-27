@@ -386,6 +386,7 @@ async def build_context(
     )
 
     if mode in {ExecutionMode.LIVE, ExecutionMode.SANDBOX}:
+        await _reconcile_trade_plans(ctx)
         await _refresh_catalog_if_stale(ctx)
 
     logger.info(
@@ -395,6 +396,27 @@ async def build_context(
         config_version=active_config.version,
     )
     return ctx
+
+
+async def _reconcile_trade_plans(ctx: AppContext) -> None:
+    """Приводит планы и корзину в состояние, применимое для торговли.
+
+    Открытый план без инструмента в корзине неисполним, а раньше ещё и ронял
+    чтение всех планов (мониторинг позиций и дашборд падали с ValueError).
+    Закрываем такие планы явной причиной и сообщаем о подозрительных
+    идентификаторах. Ошибка сверки не должна мешать старту приложения.
+    """
+    from application.use_cases.reconcile_trade_plans import (
+        log_suspicious_instrument_uids,
+        reconcile_orphaned_trade_plans,
+    )
+
+    try:
+        await reconcile_orphaned_trade_plans(ctx)
+        await log_suspicious_instrument_uids(ctx)
+    except Exception:
+        # Сверка не критична для старта: логируем и работаем дальше.
+        logger.exception("trade_plans_reconciliation_failed")
 
 
 async def _refresh_catalog_if_stale(ctx: AppContext) -> None:

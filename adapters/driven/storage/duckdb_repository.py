@@ -381,7 +381,23 @@ class DuckDBRepository:
         return await self._plan_from_row(rows[0])
 
     async def get_open_trade_plans(self) -> list[TradePlan]:
-        open_statuses = ", ".join(
+        rows = await self._arun(
+            "SELECT * FROM trade_plans "
+            f"WHERE status IN ({self._open_plan_statuses()}) ORDER BY created_at"
+        )
+        # План, чей инструмент удалён из корзины, пропускаем: один такой
+        # «сирота» (например, запись от бэктеста со старым идентификатором)
+        # не должен ронять ни мониторинг позиций, ни дашборд.
+        plans: list[TradePlan] = []
+        for row in rows:
+            plan = await self._plan_from_row(row)
+            if plan is not None:
+                plans.append(plan)
+        return plans
+
+    @staticmethod
+    def _open_plan_statuses() -> str:
+        return ", ".join(
             f"'{s.value}'"
             for s in (
                 TradePlanStatus.PROPOSED,
@@ -389,16 +405,47 @@ class DuckDBRepository:
                 TradePlanStatus.ACTIVE,
             )
         )
-        rows = await self._arun(
-            f"SELECT * FROM trade_plans WHERE status IN ({open_statuses}) ORDER BY created_at"
-        )
-        return [await self._plan_from_row(row) for row in rows]
 
-    async def _plan_from_row(self, row: tuple[Any, ...]) -> TradePlan:
+    async def list_orphaned_trade_plan_ids(self) -> tuple[str, ...]:
+        """Id открытых планов, чей инструмент отсутствует в корзине."""
+        rows = await self._arun(
+            "SELECT id FROM trade_plans "
+            f"WHERE status IN ({self._open_plan_statuses()}) "
+            "AND instrument_uid NOT IN (SELECT uid FROM instruments)"
+        )
+        return tuple(str(row[0]) for row in rows)
+
+    async def close_orphaned_trade_plans(self, reason: str) -> tuple[str, ...]:
+        """Закрывает открытые планы без инструмента в корзине. Возвращает их id.
+
+        План без инструмента нельзя ни исполнить, ни промониторить: нет UID
+        для заявки и свечей. Поэтому такие планы закрываются явной причиной,
+        а не молча ломают чтение всех остальных.
+        """
+        plan_ids = await self.list_orphaned_trade_plan_ids()
+        if not plan_ids:
+            return ()
+        placeholders = ", ".join("?" for _ in plan_ids)
+        await self._arun(
+            "UPDATE trade_plans "
+            "SET status = ?, closed_at = now(), rejection_reason = ? "
+            f"WHERE id IN ({placeholders})",
+            [TradePlanStatus.CLOSED_MANUAL.value, reason, *plan_ids],
+        )
+        return plan_ids
+
+    async def _plan_from_row(self, row: tuple[Any, ...]) -> TradePlan | None:
         instrument = await self.get_instrument(row[1])
         if instrument is None:
-            msg = f"Инструмент {row[1]} не найден в БД"
-            raise ValueError(msg)
+            # Инструмент мог быть удалён из корзины или прийти из другого
+            # контура (бэктест со старым идентификатором). Читатель обязан
+            # деградировать предупреждением, а не падать ValueError.
+            logger.warning(
+                "trade_plan_instrument_missing",
+                plan_id=str(row[0]),
+                instrument_uid=str(row[1]),
+            )
+            return None
 
         invalidation_payload = json.loads(row[7])
         plan = TradePlan(
