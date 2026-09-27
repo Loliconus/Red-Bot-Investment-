@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
+from core.domain.catalog import InstrumentCatalogEntry
 from core.domain.entities import Instrument, PortfolioState, StrategyConfig, TradePlan
 from core.journal.hypothesis_engine import Hypothesis
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
@@ -87,6 +88,41 @@ class RepositoryPort(Protocol):
     async def delete_instrument(self, uid: str) -> None: ...
 
     async def list_instruments(self) -> list[Instrument]: ...
+
+    # ------------------------------------------------------------ каталог
+    async def save_catalog_entries(self, entries: Sequence[InstrumentCatalogEntry]) -> None:
+        """Upsert записей справочника, полученных из API.
+
+        Каталог — кеш внешних данных: он обновляется целиком по типам
+        инструментов и никогда не редактируется пользователем вручную.
+        """
+        ...
+
+    async def delete_catalog_entries(self, instrument_types: Sequence[str]) -> None:
+        """Удаляет записи указанных типов перед обновлением каталога."""
+        ...
+
+    async def list_catalog_entries(
+        self,
+        *,
+        query: str | None = None,
+        instrument_types: Sequence[str] | None = None,
+        tradable_only: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[InstrumentCatalogEntry]:
+        """Читает сохранённый каталог: поиск и фильтры для GUI."""
+        ...
+
+    async def get_catalog_entry(self, uid: str) -> InstrumentCatalogEntry | None: ...
+
+    async def find_catalog_entry(
+        self, ticker: str, class_code: str | None = None
+    ) -> InstrumentCatalogEntry | None:
+        """Точный поиск по тикеру (и класс-коду, если он задан)."""
+        ...
+
+    async def count_catalog_entries(self, instrument_types: Sequence[str] | None = None) -> int: ...
 
     async def save_portfolio_state(self, state_json: str) -> None: ...
 

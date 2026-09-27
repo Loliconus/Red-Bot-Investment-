@@ -43,7 +43,10 @@ attribution are under `static/vendor/` and on `/chart/{uid}`.
 - P2 `/instruments`, `/journal`: instrument enable/disable is persisted; approval
   of a hypothesis records a reviewed state **without** applying unspecified
   numeric strategy changes. TA parameter editing is disabled until versioned
-  use cases are implemented.
+  use cases are implemented. The instrument catalog is loaded from
+  `InstrumentsService` and persisted in DuckDB (`instrument_catalog`) — no
+  ticker, lot size or UID is hardcoded; GUI search, backtest and the add-form
+  read the saved catalog, and a refresh action re-fetches it from the API.
 - P2 `/backtest`: launch fails closed with HTTP 501. Equity/trades are not
   fabricated from live account data. An isolated runner, walk-forward results,
   progress events and a working runner are **not complete** and are required

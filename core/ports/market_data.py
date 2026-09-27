@@ -10,11 +10,12 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
+from core.domain.catalog import InstrumentCatalogEntry
 from core.domain.entities import Instrument
 from core.domain.enums import Timeframe
 from core.domain.value_objects import OHLCV, OrderbookSnapshot
@@ -22,7 +23,7 @@ from core.domain.value_objects import OHLCV, OrderbookSnapshot
 
 @runtime_checkable
 class MarketDataPort(Protocol):
-    """Источник котировок, свечей, стакана и индикаторов из API."""
+    """Источник котировок, свечей, стакана, индикаторов и справочника инструментов."""
 
     async def get_candles(
         self,
@@ -60,10 +61,31 @@ class MarketDataPort(Protocol):
         timeframe: Timeframe,
         params: Mapping[str, Any],
     ) -> dict[str, Decimal | None]:
-        """Индикаторы API в Decimal: ``{"sma": Decimal("275.13")}`` и т. п.
-        """
+        """Индикаторы API в Decimal: ``{"sma": Decimal("275.13")}`` и т. п."""
         ...
 
     async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
         """Однозначно находит инструмент. Кидает исключение, если найдено несколько."""
+        ...
+
+    async def fetch_catalog(
+        self, instrument_types: Sequence[str] | None = None
+    ) -> list[InstrumentCatalogEntry]:
+        """Справочник инструментов из API (``InstrumentsService``: Shares/Etfs/...).
+
+        Вызывающий код сохраняет результат в хранилище: списки API жёстко
+        ограничены по частоте (15 запросов в минуту на метод), поэтому читать
+        каталог нужно из БД, а не из сети. Оффлайн-контуры (бэктест) сетевого
+        справочника не имеют и сообщают об этом ``CatalogUnavailableError``.
+        """
+        ...
+
+    async def search_instruments(
+        self,
+        query: str,
+        *,
+        instrument_type: str | None = None,
+        limit: int = 20,
+    ) -> list[InstrumentCatalogEntry]:
+        """Поиск инструмента по тикеру, названию или ISIN (``FindInstrument``)."""
         ...

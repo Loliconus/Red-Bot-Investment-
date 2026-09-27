@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from core.domain.catalog import InstrumentCatalogEntry
 from core.domain.entities import Instrument, OrderResult, OrderState, PortfolioState, Position
 from core.domain.enums import OrderSide, OrderStatus, Timeframe
 from core.domain.value_objects import OHLCV, OrderbookLevel, OrderbookSnapshot
@@ -131,6 +132,106 @@ def instrument_to_domain(instrument: Any, *, is_benchmark: bool = False) -> Inst
         lot_size=int(instrument.lot),
         is_benchmark=is_benchmark,
         currency=str(getattr(instrument, "currency", "rub")).upper(),
+    )
+
+
+# ------------------------------------------------------------------ каталог
+def _catalog_text(raw: Any, *names: str) -> str:
+    """Первое непустое строковое поле среди перечисленных (поля API опциональны)."""
+    for name in names:
+        value = getattr(raw, name, None)
+        if value:
+            return str(value)
+    return ""
+
+
+def _catalog_flag(raw: Any, name: str) -> bool:
+    return bool(getattr(raw, name, False))
+
+
+def _catalog_increment(raw: Any) -> Decimal | None:
+    """Шаг цены в Decimal через штатную конвертацию Quotation."""
+    value = getattr(raw, "min_price_increment", None)
+    if value is None:
+        return None
+    return quotation_to_decimal(value)
+
+
+def _catalog_lot(raw: Any) -> int:
+    """Размер лота из API; у части инструментов поле пустое — берём минимум 1."""
+    try:
+        lot = int(getattr(raw, "lot", 0) or 0)
+    except (TypeError, ValueError):
+        lot = 0
+    return max(lot, 1)
+
+
+def _catalog_instrument_type(raw: Any, fallback: str) -> str:
+    """Тип инструмента: собственное поле API, иначе тип метода-источника."""
+    declared = _catalog_text(raw, "instrument_type").strip().lower()
+    return declared or fallback
+
+
+def instrument_list_to_catalog(items: Any, instrument_type: str) -> list[InstrumentCatalogEntry]:
+    """``Share``/``Etf``/``Currency``/``Future`` из списка API → записи каталога.
+
+    ``instrument_type`` — тип, с которым был вызван метод списка: он нужен как
+    запасной вариант, если API не заполнил собственное поле ``instrument_type``.
+    """
+    entries: list[InstrumentCatalogEntry] = []
+    for raw in items or []:
+        uid = _catalog_text(raw, "uid")
+        ticker = _catalog_text(raw, "ticker")
+        if not uid or not ticker:
+            continue
+        entries.append(
+            InstrumentCatalogEntry(
+                uid=uid,
+                ticker=ticker,
+                class_code=_catalog_text(raw, "class_code"),
+                name=_catalog_text(raw, "name"),
+                lot_size=_catalog_lot(raw),
+                currency=_catalog_text(raw, "currency").upper(),
+                instrument_type=_catalog_instrument_type(raw, instrument_type),
+                isin=_catalog_text(raw, "isin"),
+                figi=_catalog_text(raw, "figi"),
+                api_trade_available=_catalog_flag(raw, "api_trade_available_flag"),
+                buy_available=_catalog_flag(raw, "buy_available_flag"),
+                sell_available=_catalog_flag(raw, "sell_available_flag"),
+                for_iis=_catalog_flag(raw, "for_iis_flag"),
+                for_qual_investor=_catalog_flag(raw, "for_qual_investor_flag"),
+                exchange=_catalog_text(raw, "exchange"),
+                sector=_catalog_text(raw, "sector"),
+                country_of_risk=_catalog_text(raw, "country_of_risk_name", "country_of_risk"),
+                liquidity=_catalog_flag(raw, "liquidity_flag"),
+                min_price_increment=_catalog_increment(raw),
+            )
+        )
+    return entries
+
+
+def instrument_short_to_catalog_entry(raw: Any) -> InstrumentCatalogEntry:
+    """``InstrumentShort`` из ``FindInstrument`` → запись каталога.
+
+    У ``InstrumentShort`` API не отдаёт валюту котировки и шаг цены: это
+    подсказка для поиска. Точные ``currency``, ``lot`` и ``min_price_increment``
+    приходят из ``GetInstrumentBy`` при добавлении инструмента в корзину.
+    """
+    kind = getattr(raw, "instrument_kind", None)
+    instrument_type = str(getattr(kind, "name", "") or "").removeprefix("INSTRUMENT_TYPE_").lower()
+    return InstrumentCatalogEntry(
+        uid=_catalog_text(raw, "uid"),
+        ticker=_catalog_text(raw, "ticker"),
+        class_code=_catalog_text(raw, "class_code"),
+        name=_catalog_text(raw, "name"),
+        lot_size=_catalog_lot(raw),
+        currency="",
+        instrument_type=instrument_type or _catalog_instrument_type(raw, "share"),
+        isin=_catalog_text(raw, "isin"),
+        figi=_catalog_text(raw, "figi"),
+        api_trade_available=_catalog_flag(raw, "api_trade_available_flag"),
+        for_iis=_catalog_flag(raw, "for_iis_flag"),
+        for_qual_investor=_catalog_flag(raw, "for_qual_investor_flag"),
     )
 
 

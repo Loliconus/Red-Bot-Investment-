@@ -1,5 +1,11 @@
 """Домен: только стандартная библиотека, без внешних зависимостей."""
 
+from core.domain.catalog import (
+    CATALOG_INSTRUMENT_TYPES,
+    DEFAULT_CATALOG_TYPES,
+    CatalogUnavailableError,
+    InstrumentCatalogEntry,
+)
 from core.domain.entities import (
     Instrument,
     InvalidationRule,
@@ -53,15 +59,19 @@ from core.domain.value_objects import (
 )
 
 __all__ = [
+    "CATALOG_INSTRUMENT_TYPES",
+    "DEFAULT_CATALOG_TYPES",
     "OHLCV",
     "TERMINAL_STATUSES",
     "CandleSeries",
+    "CatalogUnavailableError",
     "DecisionType",
     "DomainEvent",
     "ExitReason",
     "HardStopTriggered",
     "HypothesisStatus",
     "Instrument",
+    "InstrumentCatalogEntry",
     "InvalidationRule",
     "KillSwitchEngaged",
     "MarketRegime",

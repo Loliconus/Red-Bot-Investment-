@@ -8,6 +8,10 @@ Parquet/DuckDB-хранилища, сдвинутые во времени на �
 Такой подход дает важное свойство: бэктест прогоняет ровно тот же код
 принятия решения, что и бой. Расхождение «бэктест сказал хорошо, бой — плохо»
 тогда объясняется рынком, а не разницей реализаций.
+
+Справочник инструментов в бэктесте тоже берётся из хранилища: каталог
+загружается из API в контуре live/sandbox и сохраняется в БД, поэтому здесь
+достаточно прочитать его же — хардкод тикеров, лотов и UID не нужен.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from typing import Any
 
 import structlog
 
+from core.domain.catalog import CatalogUnavailableError, InstrumentCatalogEntry
 from core.domain.entities import Instrument
 from core.domain.enums import Timeframe
 from core.domain.value_objects import OHLCV, OrderbookSnapshot
@@ -36,11 +41,13 @@ class BacktestReplayAdapter:
         data_dir: Path | str,
         clock: Any = None,
         orderbook: OrderbookSnapshot | None = None,
+        repository: Any = None,
     ) -> None:
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._clock = clock
         self._orderbook = orderbook
+        self._repository = repository
         self._cache: dict[tuple[str, Timeframe], tuple[OHLCV, ...]] = {}
 
     def load_from_rows(
@@ -168,19 +175,58 @@ class BacktestReplayAdapter:
         raise NotImplementedError(msg)
 
     async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
-        from config.catalog import find_catalog_instrument
-
-        found = find_catalog_instrument(ticker, class_code)
-        if found is not None:
-            return found
+        """Разрешает инструмент по сохранённому каталогу; сети в бэктесте нет."""
+        symbol = ticker.strip().upper()
+        entry = await self._catalog_lookup(symbol, class_code.strip().upper() or None)
+        if entry is not None:
+            return entry.to_instrument(is_benchmark=symbol == "IMOEX")
         return Instrument(
-            uid=f"backtest-{ticker.lower()}",
-            ticker=ticker.upper(),
-            class_code=class_code.upper(),
+            uid=f"backtest-{symbol.lower()}",
+            ticker=symbol,
+            class_code=class_code.strip().upper() or "TQBR",
             lot_size=10,
-            is_benchmark=(ticker.upper() == "IMOEX"),
+            is_benchmark=(symbol == "IMOEX"),
             currency="RUB",
         )
+
+    async def _catalog_lookup(
+        self, ticker: str, class_code: str | None
+    ) -> InstrumentCatalogEntry | None:
+        if self._repository is None:
+            return None
+        find_entry = getattr(self._repository, "find_catalog_entry", None)
+        if find_entry is None:
+            return None
+        entry: InstrumentCatalogEntry | None = await find_entry(ticker, class_code)
+        return entry
+
+    async def fetch_catalog(self, instrument_types: Any = None) -> list[InstrumentCatalogEntry]:
+        """Сетевого справочника в бэктесте нет: каталог только из сохранённых данных."""
+        msg = (
+            "Бэктест работает без сети: справочник инструментов недоступен. "
+            "Обновите каталог в контуре live/sandbox — он сохранится в БД "
+            "и будет использован здесь."
+        )
+        raise CatalogUnavailableError(msg)
+
+    async def search_instruments(
+        self,
+        query: str,
+        *,
+        instrument_type: str | None = None,
+        limit: int = 20,
+    ) -> list[InstrumentCatalogEntry]:
+        """Поиск по сохранённому каталогу — источнику справочника в бэктесте."""
+        if self._repository is None:
+            msg = "Реплей бэктеста без репозитория не может искать инструменты"
+            raise CatalogUnavailableError(msg)
+        entries: list[InstrumentCatalogEntry] = await self._repository.list_catalog_entries(
+            query=query,
+            instrument_types=[instrument_type] if instrument_type else None,
+            tradable_only=False,
+            limit=max(limit, 1),
+        )
+        return entries
 
     def set_clock(self, clock: Any) -> None:
         self._clock = clock

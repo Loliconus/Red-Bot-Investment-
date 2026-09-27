@@ -15,22 +15,27 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from adapters.driven.tbank.mappers import (
     TIMEFRAME_TO_API_INTERVAL,
     TIMEFRAME_TO_INDICATOR_INTERVAL,
     TIMEFRAME_TO_SUBSCRIPTION_INTERVAL,
     candle_to_domain,
     datetime_to_proto_timestamp,
+    instrument_list_to_catalog,
+    instrument_short_to_catalog_entry,
     instrument_to_domain,
     orderbook_to_domain,
 )
 from adapters.driven.tbank.retry import retry_read
+from core.domain.catalog import DEFAULT_CATALOG_TYPES, InstrumentCatalogEntry
 from core.domain.entities import Instrument
 from core.domain.enums import Timeframe
 from core.domain.value_objects import OHLCV, OrderbookSnapshot
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from adapters.driven.tbank.grpc_client import TInvestChannel
 
@@ -44,6 +49,29 @@ TECH_ANALYSIS_TYPES: dict[str, str] = {
     "bollinger": "INDICATOR_TYPE_BB",
     "bb": "INDICATOR_TYPE_BB",
 }
+
+#: Методы ``InstrumentsService``, отдающие списки инструментов по типу.
+#: Каждый метод ограничен 15 запросами в минуту — каталог обновляется пачкой
+#: и сразу сохраняется в БД, а не читается из сети на каждый экран GUI.
+CATALOG_LIST_METHODS: dict[str, str] = {
+    "share": "shares",
+    "etf": "etfs",
+    "bond": "bonds",
+    "currency": "currencies",
+    "futures": "futures",
+}
+
+#: Имена enum-значений ``InstrumentType`` для фильтра ``FindInstrument``.
+FIND_INSTRUMENT_KINDS: dict[str, str] = {
+    "share": "INSTRUMENT_TYPE_SHARE",
+    "etf": "INSTRUMENT_TYPE_ETF",
+    "bond": "INSTRUMENT_TYPE_BOND",
+    "currency": "INSTRUMENT_TYPE_CURRENCY",
+    "futures": "INSTRUMENT_TYPE_FUTURES",
+}
+
+
+logger = structlog.get_logger(__name__)
 
 
 class TBankMarketDataAdapter:
@@ -166,12 +194,12 @@ class TBankMarketDataAdapter:
                 GetTechAnalysisRequest.IndicatorInterval,
                 TIMEFRAME_TO_INDICATOR_INTERVAL[timeframe],
             ),
-            "indicator_type": getattr(
-                GetTechAnalysisRequest.IndicatorType, indicator_type_name
-            ),
+            "indicator_type": getattr(GetTechAnalysisRequest.IndicatorType, indicator_type_name),
             "type_of_price": GetTechAnalysisRequest.TypeOfPrice.TYPE_OF_PRICE_CLOSE,
         }
-        period = int(params.get("period", {"sma": 200, "ema": 50, "rsi": 14, "bb": 20}.get(normalized, 14)))
+        period = int(
+            params.get("period", {"sma": 200, "ema": 50, "rsi": 14, "bb": 20}.get(normalized, 14))
+        )
         if normalized != "macd":
             request_fields["length"] = period
         if normalized == "bb":
@@ -218,6 +246,91 @@ class TBankMarketDataAdapter:
             raise ValueError(msg)
         return instrument_to_domain(instrument)
 
+    async def fetch_catalog(
+        self, instrument_types: Sequence[str] | None = None
+    ) -> list[InstrumentCatalogEntry]:
+        """Справочник инструментов из ``InstrumentsService``.
+
+        Списки (Shares/Etfs/Currencies/Futures/Bonds) ограничены 15 запросами в
+        минуту, поэтому один refresh — это один запрос на тип, а результат
+        сохраняется в БД: GUI и бэктест читают каталог из хранилища.
+        """
+        from t_tech.invest.grpc.schemas import InstrumentsRequest, InstrumentStatus
+
+        requested = [item.strip().lower() for item in (instrument_types or ()) if item.strip()]
+        unknown = sorted({item for item in requested if item not in CATALOG_LIST_METHODS})
+        if unknown:
+            msg = (
+                "Неизвестные типы инструментов каталога: "
+                f"{', '.join(unknown)}. Допустимо: {', '.join(sorted(CATALOG_LIST_METHODS))}"
+            )
+            raise ValueError(msg)
+
+        entries: list[InstrumentCatalogEntry] = []
+        services = self._channel.services.instruments
+        request = InstrumentsRequest(instrument_status=InstrumentStatus.INSTRUMENT_STATUS_BASE)
+        types = requested or list(DEFAULT_CATALOG_TYPES)
+        for instrument_type in types:
+            method = getattr(services, CATALOG_LIST_METHODS[instrument_type])
+            response = await self._fetch_instrument_list(
+                method, request, operation_name=f"catalog:{instrument_type}"
+            )
+            entries.extend(
+                instrument_list_to_catalog(
+                    getattr(response, "instruments", None) or [], instrument_type
+                )
+            )
+        logger.info("catalog_fetched", types=types, entries=len(entries))
+        return entries
+
+    async def _fetch_instrument_list(
+        self, method: Any, request: Any, *, operation_name: str
+    ) -> Any:
+        """Один read-only список инструментов с повтором."""
+        return await retry_read(lambda: method(request=request), operation_name=operation_name)
+
+    async def search_instruments(
+        self,
+        query: str,
+        *,
+        instrument_type: str | None = None,
+        limit: int = 20,
+    ) -> list[InstrumentCatalogEntry]:
+        """Поиск инструмента через ``InstrumentsService/FindInstrument``."""
+        from t_tech.invest.grpc.schemas import FindInstrumentRequest, InstrumentType
+
+        needle = query.strip()
+        if len(needle) < 2:
+            return []
+        if instrument_type:
+            enum_name = FIND_INSTRUMENT_KINDS.get(instrument_type.strip().lower())
+            if enum_name is None:
+                msg = (
+                    f"Неизвестный тип инструмента для поиска: {instrument_type}. "
+                    f"Допустимо: {', '.join(sorted(FIND_INSTRUMENT_KINDS))}"
+                )
+                raise ValueError(msg)
+            kind = getattr(InstrumentType, enum_name)
+        else:
+            kind = InstrumentType.INSTRUMENT_TYPE_UNSPECIFIED
+
+        request = FindInstrumentRequest(
+            query=needle,
+            instrument_kind=kind,
+            api_trade_available_flag=True,
+        )
+        response = await retry_read(
+            lambda: self._channel.services.instruments.find_instrument(request=request),
+            operation_name="find_instrument",
+        )
+        raw_items = getattr(response, "instruments", None) or []
+        entries: list[InstrumentCatalogEntry] = []
+        for item in raw_items:
+            if not getattr(item, "uid", None):
+                continue
+            entries.append(instrument_short_to_catalog_entry(item))
+        return entries[: max(limit, 1)]
+
     async def aclose(self) -> None:
         await self._channel.aclose()
 
@@ -255,7 +368,11 @@ def _parse_tech_analysis(response: Any, indicator: str) -> dict[str, Decimal | N
             "signal": signal,
             "histogram": macd - signal if macd is not None and signal is not None else None,
         }
-    field = {"sma": ("middle_band", "sma"), "ema": ("middle_band", "ema"), "rsi": ("signal", "rsi")}[indicator]
+    field = {
+        "sma": ("middle_band", "sma"),
+        "ema": ("middle_band", "ema"),
+        "rsi": ("signal", "rsi"),
+    }[indicator]
     return {indicator: _optional_quotation(last, *field)}
 
 

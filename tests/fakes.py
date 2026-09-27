@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from core.domain.catalog import DEFAULT_CATALOG_TYPES
 from core.domain.entities import (
     Instrument,
     OrderResult,
@@ -44,16 +46,25 @@ class FakeMarketData:
         candles: dict[tuple[str, Timeframe], Sequence[OHLCV]] | None = None,
         *,
         instruments: dict[tuple[str, str], Instrument] | None = None,
+        catalog: Sequence[Any] | None = None,
         orderbook: OrderbookSnapshot | None = None,
         indicators: dict[tuple[str, str, Timeframe], dict[str, Decimal | None]] | None = None,
         raise_on_orderbook: bool = False,
     ) -> None:
         self._candles = candles or {}
         self._instruments = instruments or {}
+        self._catalog: dict[str, Any] = {entry.uid: entry for entry in (catalog or ())}
         self._orderbook = orderbook
         self._indicators = indicators or {}
         self._raise_on_orderbook = raise_on_orderbook
         self.calls: list[str] = []
+
+    def set_catalog(self, catalog: Sequence[Any]) -> None:
+        """Задаёт справочник инструментов: эмуляция ответа InstrumentsService."""
+        self._catalog = {entry.uid: entry for entry in catalog}
+        self._instruments = {
+            (entry.ticker, entry.class_code): entry.to_instrument() for entry in catalog
+        }
 
     async def get_candles(
         self,
@@ -98,13 +109,36 @@ class FakeMarketData:
         key = (ticker, class_code)
         if key in self._instruments:
             return self._instruments[key]
-        from config.catalog import find_catalog_instrument
-
-        found = find_catalog_instrument(ticker, class_code)
-        if found is not None:
-            return found
+        for entry in self._catalog.values():
+            if entry.ticker == ticker and (not class_code or entry.class_code == class_code):
+                return entry.to_instrument()
         msg = f"Инструмент {ticker}.{class_code} не найден"
         raise ValueError(msg)
+
+    async def fetch_catalog(self, instrument_types: Any = None) -> list[Any]:
+        """Эмуляция InstrumentsService: отдаёт записи только запрошенных типов."""
+        requested = [item.strip().lower() for item in (instrument_types or ()) if item.strip()]
+        if not requested:
+            requested = list(DEFAULT_CATALOG_TYPES)
+        self.calls.append(f"fetch_catalog:{','.join(requested)}")
+        allowed = set(requested)
+        return [entry for entry in self._catalog.values() if entry.instrument_type in allowed]
+
+    async def search_instruments(
+        self,
+        query: str,
+        *,
+        instrument_type: str | None = None,
+        limit: int = 20,
+    ) -> list[Any]:
+        self.calls.append(f"search_instruments:{query}")
+        needle = query.strip().lower()
+        return [
+            entry
+            for entry in self._catalog.values()
+            if entry.matches(needle)
+            and (instrument_type is None or entry.instrument_type == instrument_type)
+        ][: max(limit, 1)]
 
     async def aclose(self) -> None:
         self.calls.clear()
@@ -225,6 +259,7 @@ class InMemoryRepository:
         self.hypotheses: dict[UUID, Hypothesis] = {}
         self.configs: dict[int, StrategyConfig] = {}
         self.instruments: dict[str, Instrument] = {}
+        self.catalog: dict[str, Any] = {}
         self.portfolio_states: list[str] = []
         self.gui_audit: list[GuiAuditEntry] = []
         self.operational_values: dict[str, str] = {}
@@ -304,6 +339,63 @@ class InMemoryRepository:
     async def list_instruments(self) -> list[Instrument]:
         return list(self.instruments.values())
 
+    # ------------------------------------------------------------- каталог
+    async def save_catalog_entries(self, entries: Sequence[Any]) -> None:
+        # Момент сохранения проставляет хранилище — как и в DuckDB-версии.
+        stamp = datetime.now(tz=UTC)
+        for entry in entries:
+            self.catalog[entry.uid] = replace(entry, updated_at=stamp)
+
+    async def delete_catalog_entries(self, instrument_types: Sequence[str]) -> None:
+        for uid, entry in list(self.catalog.items()):
+            if entry.instrument_type in set(instrument_types):
+                self.catalog.pop(uid, None)
+
+    async def list_catalog_entries(
+        self,
+        *,
+        query: str | None = None,
+        instrument_types: Sequence[str] | None = None,
+        tradable_only: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[Any]:
+        items = list(self.catalog.values())
+        if query:
+            items = [entry for entry in items if entry.matches(query)]
+        if instrument_types:
+            allowed = set(instrument_types)
+            items = [entry for entry in items if entry.instrument_type in allowed]
+        if tradable_only:
+            items = [entry for entry in items if entry.tradable]
+        items.sort(
+            key=lambda entry: (
+                not entry.api_trade_available,
+                not entry.liquidity,
+                entry.ticker,
+            )
+        )
+        return items[offset : offset + max(limit, 1)]
+
+    async def get_catalog_entry(self, uid: str) -> Any:
+        return self.catalog.get(uid)
+
+    async def find_catalog_entry(self, ticker: str, class_code: str | None = None) -> Any:
+        symbol = ticker.strip().upper()
+        for entry in self.catalog.values():
+            if entry.ticker.upper() != symbol:
+                continue
+            if class_code and entry.class_code.upper() != class_code.strip().upper():
+                continue
+            return entry
+        return None
+
+    async def count_catalog_entries(self, instrument_types: Sequence[str] | None = None) -> int:
+        if not instrument_types:
+            return len(self.catalog)
+        allowed = set(instrument_types)
+        return sum(1 for entry in self.catalog.values() if entry.instrument_type in allowed)
+
     async def save_portfolio_state(self, state_json: str) -> None:
         self.portfolio_states.append(state_json)
 
@@ -377,6 +469,8 @@ class InMemoryRepository:
 
     async def table_sizes(self) -> dict[str, int]:
         return {
+            "instruments": len(self.instruments),
+            "instrument_catalog": len(self.catalog),
             "candles": 0,
             "market_snapshots": len(self.market_snapshots),
             "decision_snapshots": len(self.decision_snapshots),
@@ -388,6 +482,7 @@ class InMemoryRepository:
     async def aclose(self) -> None:
         self.market_snapshots.clear()
         self.plans.clear()
+        self.catalog.clear()
 
 
 class FakeArchive:
@@ -523,4 +618,34 @@ def make_instrument(
         ticker=ticker,
         lot_size=lot_size,
         is_benchmark=is_benchmark,
+    )
+
+
+def make_catalog_entry(
+    *,
+    uid: str = "uid-sber",
+    ticker: str = "SBER",
+    name: str = "Сбербанк",
+    class_code: str = "TQBR",
+    lot_size: int = 10,
+    instrument_type: str = "share",
+    currency: str = "RUB",
+    isin: str = "",
+    liquidity: bool = True,
+    api_trade_available: bool = True,
+) -> Any:
+    """Запись каталога, какая приходит из InstrumentsService."""
+    from core.domain.catalog import InstrumentCatalogEntry
+
+    return InstrumentCatalogEntry(
+        uid=uid,
+        ticker=ticker,
+        class_code=class_code,
+        name=name,
+        lot_size=lot_size,
+        currency=currency,
+        instrument_type=instrument_type,
+        isin=isin,
+        liquidity=liquidity,
+        api_trade_available=api_trade_available,
     )

@@ -179,13 +179,22 @@ async def build_tbank_adapters(
 
 def build_backtest_adapters(
     settings: Settings,
+    *,
+    repository: RepositoryPort | None = None,
 ) -> tuple[MarketDataPort, OrderExecutionPort]:
-    """Адаптеры для бэктеста: реплей истории + симулятор исполнения."""
+    """Адаптеры для бэктеста: реплей истории + симулятор исполнения.
+
+    Реплей получает репозиторий, чтобы читать справочник инструментов из
+    сохранённого каталога: в бэктесте нет сети, а лот и UID обязаны быть теми
+    же, что прислал API при обновлении каталога.
+    """
     from adapters.driven.backtest.replay_adapter import BacktestReplayAdapter
     from adapters.driven.backtest.simulated_broker import SimulatedBroker
 
     data_dir: Path = settings.storage.data_dir
-    replay: MarketDataPort = BacktestReplayAdapter(data_dir=data_dir / "history")
+    replay: MarketDataPort = BacktestReplayAdapter(
+        data_dir=data_dir / "history", repository=repository
+    )
     broker: OrderExecutionPort = SimulatedBroker()
     return replay, broker
 
@@ -233,7 +242,7 @@ async def build_context(
         await repository.set_memory_limit_mb(active_memory_mb)
 
     if mode is ExecutionMode.BACKTEST:
-        market_data, broker = build_backtest_adapters(settings)
+        market_data, broker = build_backtest_adapters(settings, repository=repository)
         active_account_id = active_account_id or "backtest"
     else:
         if mode is ExecutionMode.SANDBOX:
@@ -376,6 +385,9 @@ async def build_context(
         },
     )
 
+    if mode in {ExecutionMode.LIVE, ExecutionMode.SANDBOX}:
+        await _refresh_catalog_if_stale(ctx)
+
     logger.info(
         "context_built",
         mode=mode.value,
@@ -383,6 +395,24 @@ async def build_context(
         config_version=active_config.version,
     )
     return ctx
+
+
+async def _refresh_catalog_if_stale(ctx: AppContext) -> None:
+    """Подтягивает справочник инструментов из API, если он устарел.
+
+    Каталог — данные для торговли и GUI, поэтому он не хардкодится: список
+    загружается из ``InstrumentsService`` и сохраняется в БД. Ошибка сети на
+    старте не должна ронять приложение — используем сохранённый каталог.
+    """
+    from application.use_cases.manage_instrument_catalog import ensure_catalog_fresh
+
+    try:
+        refreshed = await ensure_catalog_fresh(ctx)
+    except Exception:  # noqa: BLE001 - сеть на старте не обязана быть доступна
+        logger.warning("instrument_catalog_refresh_failed", mode=ctx.execution_mode.value)
+        return
+    if refreshed:
+        logger.info("instrument_catalog_updated", mode=ctx.execution_mode.value)
 
 
 def _default_config(settings: Settings) -> StrategyConfig:

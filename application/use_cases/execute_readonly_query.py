@@ -23,6 +23,7 @@ from application.composition import AppContext
 PUBLIC_TABLES = frozenset(
     {
         "instruments",
+        "instrument_catalog",
         "candles",
         "orderbook_snapshots",
         "market_snapshots",

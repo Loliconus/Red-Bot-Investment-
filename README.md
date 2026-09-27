@@ -20,7 +20,10 @@ uv run redbot secrets set-token
 # 3. Первичная инициализация базы данных
 uv run redbot db bootstrap
 
-# 4. Запуск в режиме песочницы с Web GUI
+# 4. Загрузка справочника инструментов из API (каталог для GUI и торговли)
+uv run redbot catalog-refresh
+
+# 5. Запуск в режиме песочницы с Web GUI
 uv run redbot run --mode sandbox
 ```
 
@@ -36,8 +39,9 @@ pip install -e ".[dev]"
 # 3. Настройка токена
 python main.py secrets set-token
 
-# 4. Инициализация БД и запуск
+# 4. Инициализация БД, каталог инструментов и запуск
 python main.py db bootstrap
+python main.py catalog-refresh
 python main.py run --mode sandbox
 ```
 
@@ -53,7 +57,8 @@ Web GUI доступен в браузере по адресу: **`http://localh
 | Что хранится | Где хранится | Описание и формат |
 | :--- | :--- | :--- |
 | **Токен T-Invest и секрет GUI** | `keyring` для токена; `REDBOT_TBANK__API_TOKEN` / `REDBOT_WEB__SESSION_SECRET` — только явные секретные overrides для окружения | API-токен задаётся через `uv run redbot secrets set-token` и не хранится в DuckDB. Реальное значение не должно попадать в код, логи или отчёты. |
-| **Торговые инструменты** | `data/redbot.duckdb` (таблица `instruments`) | Хранит список добавленных бумаг: `uid` (FIGI/UID инструмента), `ticker` (тикер, например `SBER`), `class_code` (`TQBR`), `lot_size` (размер лота), `currency` (`RUB`). Дефолты при первом старте: `config/seed_defaults.py`. Встроенный справочник: `config/catalog.py`. |
+| **Торговые инструменты (корзина)** | `data/redbot.duckdb` (таблица `instruments`) | Хранит список добавленных бумаг: `uid` (FIGI/UID инструмента), `ticker` (тикер, например `SBER`), `class_code` (`TQBR`), `lot_size` (размер лота), `currency` (`RUB`). Параметры каждой бумаги разрешаются через API при добавлении; тикеры для первичного заполнения — `config/seed_defaults.py`. |
+| **Каталог инструментов** | `data/redbot.duckdb` (таблица `instrument_catalog`) | Кеш справочника `InstrumentsService` (Shares / Etfs / Currencies / Futures / Bonds / FindInstrument): `ticker`, название, `class_code`, `lot_size`, `currency`, `isin`, `figi`, торговые флаги. Хардкода инструментов в коде нет — каталог загружается из API (`redbot catalog-refresh`, кнопка «↻ Обновить из API» на `/instruments` или автоматически при устаревании) и читается из БД GUI, бэктестом и поиском. |
 | **Флаги активности инструментов** | `data/redbot.duckdb` (таблица `operational_state`) | Ключи вида `instrument:<uid>:enabled` со значениями `true`/`false`. |
 | **Настройки ТА и риск-параметры** | `data/redbot.duckdb` (таблица `strategy_configs`) | Версионируемые записи конфигураций: `risk_per_trade_pct` (% риска на сделку), `min_viable_target_multiplier` (множитель цели), `max_position_notional`, веса модулей Confluence-скоринга (`confluence_weights`). Начальные параметры индикаторов (SMA, EMA, RSI, MACD, Bollinger, ATR, VWAP, OBV): `config/seed_defaults.py`. |
 | **Режим следующего запуска и счёт** | `data/redbot.duckdb` (таблица `operational_settings`) | Режим хранится в `execution_mode`, выбор счёта отдельно в `managed_account_id:sandbox` и `managed_account_id:live`. Настраивается на `/settings`; счёт также можно указать через `redbot run --account auto|<ID>`. Сохранённый sandbox/live ID сверяется с открытыми счетами своего контура. Старый `managed_account_id` читается только как совместимый fallback и тоже проверяется через API. |
@@ -66,10 +71,12 @@ Web GUI доступен в браузере по адресу: **`http://localh
 ## 🛠️ Возможности и улучшения GUI
 
 ### 1. Удобное добавление и каталог инструментов (`/instruments`)
-* **Автодополнение и поиск:** больше не нужно помнить наизусть точные тикеры (`GAZP`, `VTBR`, `SBER` и т.д.). Можно искать и выбирать акции прямо по русскому названию компании (например, «Сбербанк», «ВТБ», «Яндекс», «ЛУКОЙЛ»).
-* **Кнопки быстрого выбора (Quick Chips):** одним кликом заполняют форму добавления для ключевых голубых фишек Мосбиржи (`SBER`, `GAZP`, `LKOH`, `VTBR`, `YNDX`, `ROSN`, `NVTK`, `GMKN`, `TATN`, `MGNT`, `MOEX`, `CHMF`, `T`).
-* **Каталог 40+ акций:** полный выпадающий список ликвидных акций TQBR с автоматической подстановкой размера лота и класса инструмента.
+* **Каталог из API, а не из кода:** список инструментов загружается из `InstrumentsService` T-Invest (Shares / Etfs / Currencies / Futures / Bonds) и сохраняется в таблицу `instrument_catalog`. Ни тикеры, ни размеры лотов, ни UID не зашиты в исходники — делистинг, сплит или смена лотности не могут сделать интерфейс «тихо неверным».
+* **Автодополнение и поиск:** не нужно помнить точные тикеры (`GAZP`, `VTBR`, `SBER` и т.д.). Можно искать бумаги по тикеру, русскому названию компании («Сбербанк», «ВТБ», «Яндекс», «ЛУКОЙЛ») или ISIN; название без тикера разрешается через `FindInstrument` и тоже сохраняется в каталог.
+* **Кнопки быстрого выбора (Quick Chips):** одним кликом заполняют форму добавления для ликвидных бумаг из каталога (порядок — по ликвидности и тикеру).
+* **Полный выпадающий список:** все сохранённые инструменты с подстановкой размера лота и класса из записи каталога.
 * **Управление корзиной:** переключение активности (soft-toggle) и кнопка удаления инструмента (`✕`) из рабочей корзины.
+* **Обновление каталога:** кнопка «↻ Обновить из API», CLI-команда `redbot catalog-refresh` и автоматическое обновление при устаревании (раз в сутки) или на старте контура live/sandbox. В бэктесте каталог читается из сохранённых данных.
 * **Информационный блок:** карточка на странице подробно показывает структуру директорий и поясняет, где лежат UIDs, токены, настройки ТА и БД.
 
 ### 2. Администрирование счёта в песочнице (`/risk` и Дашборд)
@@ -88,6 +95,7 @@ Web GUI доступен в браузере по адресу: **`http://localh
 ```bash
 uv run redbot secrets set-token
 uv run redbot db bootstrap
+uv run redbot catalog-refresh             # каталог инструментов из API → БД
 uv run redbot run                         # сохранённый режим; при первом старте fallback — sandbox
 uv run redbot run --account auto           # автоматический выбор счёта
 uv run redbot run --account <account-id>   # явный ID, проверяемый как открытый счёт

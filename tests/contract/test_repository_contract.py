@@ -115,6 +115,93 @@ async def test_instrument_round_trip(repository: Any) -> None:
     assert any(i.uid == instrument.uid for i in loaded)
 
 
+def _catalog_entries() -> list[Any]:
+    from tests.fakes import make_catalog_entry
+
+    return [
+        make_catalog_entry(uid="uid-sber", ticker="SBER", name="Сбербанк", lot_size=10),
+        make_catalog_entry(uid="uid-vtbr", ticker="VTBR", name="Банк ВТБ", lot_size=10000),
+        make_catalog_entry(
+            uid="uid-usd",
+            ticker="USD000UTSTOM",
+            name="Доллар США",
+            class_code="CETS",
+            lot_size=1,
+            instrument_type="currency",
+            currency="USD",
+            liquidity=False,
+        ),
+    ]
+
+
+async def test_catalog_entries_round_trip(repository: Any) -> None:
+    await repository.save_catalog_entries(_catalog_entries())
+
+    saved = await repository.list_catalog_entries(limit=10)
+    assert {entry.ticker for entry in saved} == {"SBER", "VTBR", "USD000UTSTOM"}
+
+    sber = await repository.find_catalog_entry("SBER", "TQBR")
+    assert sber is not None
+    assert (sber.uid, sber.name, sber.lot_size, sber.currency) == (
+        "uid-sber",
+        "Сбербанк",
+        10,
+        "RUB",
+    )
+    assert sber.updated_at is not None
+    assert (await repository.get_catalog_entry("uid-vtbr")).lot_size == 10000
+
+
+async def test_catalog_requires_class_code_when_given(repository: Any) -> None:
+    await repository.save_catalog_entries(_catalog_entries())
+
+    assert await repository.find_catalog_entry("USD000UTSTOM", "CETS") is not None
+    assert await repository.find_catalog_entry("USD000UTSTOM", "TQBR") is None
+    assert await repository.find_catalog_entry("USD000UTSTOM") is not None
+
+
+async def test_catalog_search_matches_ticker_and_name(repository: Any) -> None:
+    await repository.save_catalog_entries(_catalog_entries())
+
+    by_ticker = await repository.list_catalog_entries(query="sber", limit=10)
+    by_name = await repository.list_catalog_entries(query="банк втб", limit=10)
+    by_type = await repository.list_catalog_entries(instrument_types=["currency"], limit=10)
+    tradable = await repository.list_catalog_entries(tradable_only=True, limit=10)
+
+    assert [entry.ticker for entry in by_ticker] == ["SBER"]
+    assert [entry.ticker for entry in by_name] == ["VTBR"]
+    assert [entry.ticker for entry in by_type] == ["USD000UTSTOM"]
+    assert {entry.ticker for entry in tradable} == {"SBER", "VTBR", "USD000UTSTOM"}
+    assert await repository.count_catalog_entries(["share"]) == 2
+    assert await repository.count_catalog_entries() == 3
+
+
+async def test_catalog_delete_removes_only_given_types(repository: Any) -> None:
+    await repository.save_catalog_entries(_catalog_entries())
+
+    await repository.delete_catalog_entries(["share"])
+
+    assert {entry.ticker for entry in await repository.list_catalog_entries(limit=10)} == {
+        "USD000UTSTOM"
+    }
+    assert await repository.count_catalog_entries(["share"]) == 0
+
+
+async def test_catalog_save_replaces_entry_by_uid(repository: Any) -> None:
+    from tests.fakes import make_catalog_entry
+
+    await repository.save_catalog_entries(_catalog_entries())
+    await repository.save_catalog_entries(
+        [make_catalog_entry(uid="uid-sber", ticker="SBER", name="Сбер Банк", lot_size=1)]
+    )
+
+    entries = await repository.list_catalog_entries(limit=10)
+    assert len(entries) == 3
+    sber = await repository.find_catalog_entry("SBER", "TQBR")
+    assert sber is not None
+    assert (sber.name, sber.lot_size) == ("Сбер Банк", 1)
+
+
 async def test_trade_plan_round_trip(repository: Any) -> None:
     instrument = _instrument()
     await repository.save_instrument(instrument)

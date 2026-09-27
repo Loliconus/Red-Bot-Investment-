@@ -24,37 +24,9 @@
       {% include 'partials/instrument_table.html' %}
     </div>
 
-    <!-- Быстрый выбор популярных акций Мосбиржи -->
-    <div style="padding: 16px 20px 0;">
-      <div class="eyebrow" style="margin-bottom: 8px;">БЫСТРЫЙ ВЫБОР ИЗ ТОП-АКЦИЙ МОСБИРЖИ:</div>
-      <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('SBER', 'TQBR')">Сбербанк (SBER)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('GAZP', 'TQBR')">Газпром (GAZP)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('VTBR', 'TQBR')">ВТБ (VTBR)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('LKOH', 'TQBR')">ЛУКОЙЛ (LKOH)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('YNDX', 'TQBR')">Яндекс (YNDX)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('ROSN', 'TQBR')">Роснефть (ROSN)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('NVTK', 'TQBR')">НОВАТЭК (NVTK)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('GMKN', 'TQBR')">Норникель (GMKN)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('TATN', 'TQBR')">Татнефть (TATN)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('MGNT', 'TQBR')">Магнит (MGNT)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('MOEX', 'TQBR')">Мосбиржа (MOEX)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('CHMF', 'TQBR')">Северсталь (CHMF)</button>
-        <button type="button" class="button small secondary" onclick="selectQuickTicker('T', 'TQBR')">Т-Технологии (T)</button>
-      </div>
-
-      <!-- Выпадающий список всех акций из каталога -->
-      <div style="margin-bottom: 14px;">
-        <label style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">
-          Или выберите акцию из полного каталога (40+ бумаг):
-        </label>
-        <select id="catalog-picker" onchange="if(this.value){ selectQuickTicker(this.value, 'TQBR'); }" style="width: 100%; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--text);">
-          <option value="">-- Выберите компанию из списка --</option>
-          {% for cat in catalog|default([]) %}
-            <option value="{{ cat.ticker }}">{{ cat.name }} ({{ cat.ticker }}, лот {{ cat.lot_size }} шт., {{ cat.class_code }})</option>
-          {% endfor %}
-        </select>
-      </div>
+    <!-- Каталог инструментов: данные из API, сохранённые в БД -->
+    <div id="instrument-catalog" style="padding: 16px 20px 0;">
+      {% include 'partials/instrument_catalog.html' %}
     </div>
 
     <!-- Форма добавления инструмента -->
@@ -76,7 +48,8 @@
     </form>
 
     <p class="panel-note">
-      Вы можете ввести тикер (VTBR, GAZP), русское название компании (Сбербанк, Яндекс) либо кликнуть на нужную бумагу выше. Параметры лотности и UID разрешаются автоматически через API брокера или каталог Мосбиржи.
+      Введите тикер (VTBR, GAZP) или русское название компании (Сбербанк, Яндекс) — инструмент будет найден через API.
+      Лот, UID и валюта всегда берутся из ответа брокера, а не из зашитого в код справочника.
     </p>
   </section>
 
@@ -128,9 +101,10 @@
         <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
           <strong style="color: var(--accent);">📊 Инструменты, FIGI / UID и корзина</strong>
           <div style="color: var(--muted); margin-top: 3px;">
-            • База данных DuckDB: <code>data/redbot.duckdb</code> (таблица <code>instruments</code>: поля <code>uid</code>, <code>ticker</code>, <code>class_code</code>, <code>lot_size</code>, <code>currency</code>).<br>
-            • Флаги активности: таблица <code>operational_state</code> (ключи <code>instrument:&lt;uid&gt;:enabled</code>).<br>
-            • Справочный каталог Мосбиржи и дефолты: <code>config/catalog.py</code> и <code>config/seed_defaults.py</code>.
+            • Рабочая корзина: база DuckDB <code>data/redbot.duckdb</code>, таблица <code>instruments</code> (поля <code>uid</code>, <code>ticker</code>, <code>class_code</code>, <code>lot_size</code>, <code>currency</code>).<br>
+            • Флаги активности: таблица <code>operational_settings</code> (ключи <code>instrument:&lt;uid&gt;:enabled</code>).<br>
+            • Каталог инструментов: таблица <code>instrument_catalog</code> — кеш справочника <code>InstrumentsService</code> (Shares / Etfs / Currencies / Futures / FindInstrument). Хардкода тикеров и лотов в коде нет: данные загружаются из API и сохраняются здесь.<br>
+            • Дефолты первичного заполнения: <code>config/seed_defaults.py</code>.
           </div>
         </div>
 
@@ -174,6 +148,13 @@ function selectQuickTicker(ticker, classCode) {
   if (clsInput && classCode) {
     clsInput.value = classCode;
   }
+}
+
+// Значение option в выпадающем каталоге — "ТИКЕР|КЛАСС-КОД":
+// класс-код берём из записи каталога, а не подставляем TQBR всем инструментам.
+function selectCatalogInstrument(value) {
+  var parts = String(value).split('|');
+  selectQuickTicker(parts[0], parts.length > 1 ? parts[1] : 'TQBR');
 }
 </script>
 {% endblock %}

@@ -62,6 +62,29 @@ EXPECTED_REQUEST_FIELDS: dict[str, dict[str, int]] = {
     },
     "OpenSandboxAccountRequest": {"name": 1},
     "SandboxPayInRequest": {"account_id": 1, "amount": 2},
+    # Каталог инструментов: методы списков и FindInstrument.
+    "FindInstrumentRequest": {
+        "query": 1,
+        "instrument_kind": 2,
+        "api_trade_available_flag": 3,
+    },
+}
+
+#: Поля ответов, которые потребляют адаптер каталога. Номера — часть контракта:
+#: по ним мапперы находят данные, поэтому смена proto ломает молча.
+EXPECTED_RESPONSE_FIELDS: dict[str, dict[str, int]] = {
+    "FindInstrumentResponse": {"instruments": 1},
+    "InstrumentShort": {
+        "isin": 1,
+        "figi": 2,
+        "ticker": 3,
+        "class_code": 4,
+        "instrument_type": 5,
+        "name": 6,
+        "uid": 7,
+        "position_uid": 8,
+        "api_trade_available_flag": 10,
+    },
 }
 
 
@@ -82,6 +105,7 @@ def verify_sdk_schema() -> list[str]:
         CancelOrderRequest,
         CandleInstrument,
         CandleInterval,
+        FindInstrumentRequest,
         GetAccountsRequest,
         GetCandlesRequest,
         GetOrderBookRequest,
@@ -90,6 +114,7 @@ def verify_sdk_schema() -> list[str]:
         InstrumentRequest,
         InstrumentsRequest,
         InstrumentStatus,
+        InstrumentType,
         MarketDataServerSideStreamRequest,
         OrderDirection,
         OrderExecutionReportStatus,
@@ -126,6 +151,7 @@ def verify_sdk_schema() -> list[str]:
             GetTechAnalysisRequest,
             OpenSandboxAccountRequest,
             SandboxPayInRequest,
+            FindInstrumentRequest,
         )
     }
     checked: list[str] = []
@@ -157,18 +183,12 @@ def verify_sdk_schema() -> list[str]:
             OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_PARTIALLYFILL
         ),
         "INSTRUMENT_STATUS_BASE": int(InstrumentStatus.INSTRUMENT_STATUS_BASE),
-        "SUBSCRIPTION_ACTION_SUBSCRIBE": int(
-            SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE
-        ),
+        "SUBSCRIPTION_ACTION_SUBSCRIBE": int(SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE),
         "SUBSCRIPTION_INTERVAL_ONE_MINUTE": int(
             SubscriptionInterval.SUBSCRIPTION_INTERVAL_ONE_MINUTE
         ),
-        "SUBSCRIPTION_INTERVAL_ONE_HOUR": int(
-            SubscriptionInterval.SUBSCRIPTION_INTERVAL_ONE_HOUR
-        ),
-        "SUBSCRIPTION_INTERVAL_ONE_DAY": int(
-            SubscriptionInterval.SUBSCRIPTION_INTERVAL_ONE_DAY
-        ),
+        "SUBSCRIPTION_INTERVAL_ONE_HOUR": int(SubscriptionInterval.SUBSCRIPTION_INTERVAL_ONE_HOUR),
+        "SUBSCRIPTION_INTERVAL_ONE_DAY": int(SubscriptionInterval.SUBSCRIPTION_INTERVAL_ONE_DAY),
         "INDICATOR_TYPE_BB": int(GetTechAnalysisRequest.IndicatorType.INDICATOR_TYPE_BB),
         "INDICATOR_TYPE_EMA": int(GetTechAnalysisRequest.IndicatorType.INDICATOR_TYPE_EMA),
         "INDICATOR_TYPE_RSI": int(GetTechAnalysisRequest.IndicatorType.INDICATOR_TYPE_RSI),
@@ -183,9 +203,9 @@ def verify_sdk_schema() -> list[str]:
         "INDICATOR_INTERVAL_ONE_DAY": int(
             GetTechAnalysisRequest.IndicatorInterval.INDICATOR_INTERVAL_ONE_DAY
         ),
-        "TYPE_OF_PRICE_CLOSE": int(
-            GetTechAnalysisRequest.TypeOfPrice.TYPE_OF_PRICE_CLOSE
-        ),
+        "TYPE_OF_PRICE_CLOSE": int(GetTechAnalysisRequest.TypeOfPrice.TYPE_OF_PRICE_CLOSE),
+        "INSTRUMENT_TYPE_SHARE": int(InstrumentType.INSTRUMENT_TYPE_SHARE),
+        "INSTRUMENT_TYPE_UNSPECIFIED": int(InstrumentType.INSTRUMENT_TYPE_UNSPECIFIED),
     }
     expected_enum_values = {
         "CANDLE_INTERVAL_1_MIN": 1,
@@ -215,14 +235,14 @@ def verify_sdk_schema() -> list[str]:
         "INDICATOR_INTERVAL_ONE_HOUR": 4,
         "INDICATOR_INTERVAL_ONE_DAY": 5,
         "TYPE_OF_PRICE_CLOSE": 1,
+        "INSTRUMENT_TYPE_SHARE": 2,
+        "INSTRUMENT_TYPE_UNSPECIFIED": 0,
     }
     if enum_values != expected_enum_values:
         raise AssertionError(
             f"SDK enum mismatch: expected={expected_enum_values}, actual={enum_values}"
         )
-    checked.append(
-        "CandleInterval/Orders/InstrumentStatus/Subscription/TechnicalAnalysis enums"
-    )
+    checked.append("CandleInterval/Orders/InstrumentStatus/Subscription/TechnicalAnalysis enums")
 
     # Response fields consumed by adapters/mappers are part of the contract too.
     from t_tech.invest.grpc import schemas, sandbox as sandbox_schemas
@@ -255,7 +275,38 @@ def verify_sdk_schema() -> list[str]:
         "Instrument": {"uid", "ticker", "class_code", "lot", "currency"},
         "InstrumentResponse": {"instrument"},
         "SharesResponse": {"instruments"},
+        "EtfsResponse": {"instruments"},
+        "CurrenciesResponse": {"instruments"},
+        "FuturesResponse": {"instruments"},
+        "BondsResponse": {"instruments"},
+        "FindInstrumentResponse": {"instruments"},
+        "Share": {
+            "uid",
+            "ticker",
+            "class_code",
+            "name",
+            "lot",
+            "currency",
+            "isin",
+            "figi",
+            "api_trade_available_flag",
+            "buy_available_flag",
+            "sell_available_flag",
+            "min_price_increment",
+            "liquidity_flag",
+        },
     }
+    for type_name, expected_numbers in EXPECTED_RESPONSE_FIELDS.items():
+        actual = _field_numbers(getattr(schemas, type_name))
+        mismatches = {
+            field_name: {"expected": number, "actual": actual.get(field_name)}
+            for field_name, number in expected_numbers.items()
+            if actual.get(field_name) != number
+        }
+        if mismatches:
+            raise AssertionError(f"{type_name} SDK/proto mismatch: {mismatches}")
+        checked.append(type_name)
+
     sandbox_response_types = {"OpenSandboxAccountResponse", "SandboxPayInResponse"}
     for type_name, expected_fields in response_fields.items():
         schema_module = sandbox_schemas if type_name in sandbox_response_types else schemas
@@ -263,9 +314,7 @@ def verify_sdk_schema() -> list[str]:
         actual_fields = set(_field_numbers(response_type))
         missing = expected_fields - actual_fields
         if missing:
-            raise AssertionError(
-                f"{type_name} SDK response fields missing: {sorted(missing)}"
-            )
+            raise AssertionError(f"{type_name} SDK response fields missing: {sorted(missing)}")
         checked.append(type_name)
     return checked
 

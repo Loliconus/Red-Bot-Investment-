@@ -4,7 +4,8 @@
 * ``run`` — запуск торгового цикла в заданном контуре;
 * ``secrets set-token`` — положить токен в системное хранилище ОС;
 * ``db bootstrap`` — первичное заполнение БД;
-* ``db stats`` — статистика хранилища.
+* ``db stats`` — статистика хранилища;
+* ``catalog refresh`` — обновить справочник инструментов из API.
 """
 
 from __future__ import annotations
@@ -82,6 +83,43 @@ async def _stats() -> None:
             usage = await context.archive.usage_by_layer()
             for layer, size in usage.items():
                 typer.echo(f"{layer:24s} {size:>12,} байт")
+    finally:
+        await context.aclose()
+
+
+@app_cli.command("catalog-refresh")
+def catalog_refresh(
+    types: str = typer.Option(
+        "",
+        help="Типы инструментов через запятую: share, etf, currency, futures, bond",
+    ),
+) -> None:
+    """Загружает справочник инструментов из API и сохраняет его в БД."""
+    asyncio.run(_catalog_refresh(types))
+
+
+async def _catalog_refresh(types: str) -> None:
+    from application.composition import build_context, load_saved_execution_mode
+    from application.use_cases.manage_instrument_catalog import (
+        catalog_status,
+        refresh_instrument_catalog,
+    )
+
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    resolved_mode = await load_saved_execution_mode(settings)
+    if resolved_mode is ExecutionMode.LIVE:
+        typer.confirm("Каталог будет загружен из БОЕВОГО контура. Продолжить?", abort=True)
+    requested = [item.strip().lower() for item in types.split(",") if item.strip()]
+
+    context = await build_context(settings, mode=resolved_mode)
+    try:
+        result = await refresh_instrument_catalog(context, instrument_types=requested or None)
+        status = await catalog_status(context)
+        typer.echo(
+            f"Каталог обновлён: {result.fetched} инструментов "
+            f"({', '.join(result.types)}); всего в БД: {status['count']}"
+        )
     finally:
         await context.aclose()
 
@@ -208,9 +246,15 @@ def _build_scheduler(context: Any) -> Any:
     async def monitor_cycle() -> None:
         await monitor_positions(context)
 
+    async def catalog_cycle() -> None:
+        from application.use_cases.manage_instrument_catalog import ensure_catalog_fresh
+
+        await ensure_catalog_fresh(context)
+
     scheduler = Scheduler()
     scheduler.add(TaskSpec(name="decisions", cycle=decision_cycle, interval_seconds=300))
     scheduler.add(TaskSpec(name="position_monitor", cycle=monitor_cycle, interval_seconds=60))
+    scheduler.add(TaskSpec(name="catalog_refresh", cycle=catalog_cycle, interval_seconds=21600))
     return scheduler
 
 

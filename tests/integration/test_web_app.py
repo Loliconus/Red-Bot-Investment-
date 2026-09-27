@@ -289,6 +289,52 @@ async def test_gui_pages_render(client: Any, context: AppContext) -> None:
         assert "/static/css/app.css" in response.text, path
 
 
+async def test_instruments_page_renders_saved_catalog(client: Any, context: AppContext) -> None:
+    from tests.fakes import make_catalog_entry
+
+    catalog = [
+        make_catalog_entry(uid="uid-sber", ticker="SBER", name="Сбербанк", lot_size=10),
+        make_catalog_entry(
+            uid="uid-usd",
+            ticker="USD000UTSTOM",
+            name="Доллар США",
+            class_code="CETS",
+            lot_size=1,
+            instrument_type="currency",
+            currency="USD",
+            liquidity=False,
+        ),
+    ]
+    context.market_data.set_catalog(catalog)
+    await context.repository.save_catalog_entries(catalog)
+    await context.repository.set_operational_value(
+        "instrument_catalog:updated_at", "2026-01-10T10:00:00+00:00"
+    )
+    token = _login(client)
+
+    response = client.get("/instruments")
+    assert response.status_code == 200
+    # Каталог берётся из БД: и тикеры, и размер лота видны на странице.
+    assert "Сбербанк (SBER)" in response.text
+    assert "лот 10 шт." in response.text
+    assert "USD000UTSTOM" in response.text
+    assert "Каталог пуст" not in response.text
+
+    # HTMX-обновление каталога возвращает частичную разметку панели.
+    refresh = client.post("/instruments/catalog/refresh", headers={"X-Red-Bot-Token": token})
+    assert refresh.status_code == 200
+    assert "Каталог обновлён из API: 2 инструментов" in refresh.text
+    assert "USD000UTSTOM" in refresh.text
+
+
+async def test_instruments_catalog_empty_state_is_actionable(client: Any) -> None:
+    _login(client)
+    response = client.get("/instruments")
+    assert response.status_code == 200
+    assert "Каталог пуст" in response.text
+    assert "Обновить из API" in response.text
+
+
 async def test_storage_endpoint_reports_usage(client: Any, duckdb_client: Any) -> None:
     token = _login(duckdb_client)
     response = duckdb_client.get("/api/admin/storage", headers={"X-Red-Bot-Token": token})
@@ -306,8 +352,18 @@ async def test_trades_endpoint_empty_history(client: Any) -> None:
 
 
 async def test_instruments_add_and_delete_endpoints(client: Any, context: AppContext) -> None:
+    from tests.fakes import make_catalog_entry
+
     token = _login(client)
     headers = {"X-Red-Bot-Token": token}
+
+    # Каталог — данные из API, сохранённые в БД: эмулируем загрузку справочника.
+    catalog = [
+        make_catalog_entry(uid="uid-vtbr", ticker="VTBR", name="Банк ВТБ", lot_size=10000),
+        make_catalog_entry(uid="uid-gazp", ticker="GAZP", name="Газпром", lot_size=10),
+    ]
+    context.market_data.set_catalog(catalog)
+    await context.repository.save_catalog_entries(catalog)
 
     # Добавление инструмента через форму
     resp = client.post(
@@ -324,10 +380,21 @@ async def test_instruments_add_and_delete_endpoints(client: Any, context: AppCon
     assert resp_dup.status_code == 200
     assert "уже добавлен" in resp_dup.text
 
-    # Каталог API
+    # Каталог API читается из сохранённых данных
     resp_cat = client.get("/api/instruments/catalog", headers=headers)
     assert resp_cat.status_code == 200
     assert any(item["ticker"] == "VTBR" for item in resp_cat.json())
+    assert any(item["lot_size"] == 10 for item in resp_cat.json())
+
+    # Поиск по названию работает через каталог
+    resp_search = client.get("/api/instruments/search?query=Газпром", headers=headers)
+    assert resp_search.status_code == 200
+    assert [item["ticker"] for item in resp_search.json()] == ["GAZP"]
+
+    # Обновление каталога перезаписывает сохранённые данные
+    resp_refresh = client.post("/api/instruments/catalog/refresh", headers=headers)
+    assert resp_refresh.status_code == 200, resp_refresh.text
+    assert resp_refresh.json()["fetched"] == 2
 
     # Удаление инструмента
     added_inst = next((i for i in context.instruments if i.ticker == "VTBR"), None)

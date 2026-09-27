@@ -1,21 +1,33 @@
-"""Инструменты: управление торговой корзиной, каталог Мосбиржи и параметры ТА."""
+"""Инструменты: управление торговой корзиной, каталог API и параметры ТА.
+
+Каталог не хранится в коде: он загружается из ``InstrumentsService`` и
+сохраняется в БД, поэтому все эндпоинты читают его из хранилища, а обновление
+выполняется явным действием (или автоматически при устаревании).
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from adapters.driving.web.dependencies import ContextDep, SessionDep, require_session
 from adapters.driving.web.render import render_page, render_partial
+from application.use_cases.manage_instrument_catalog import (
+    DEFAULT_CATALOG_LIMIT,
+    catalog_status,
+    catalog_view,
+    list_catalog_views,
+    refresh_instrument_catalog,
+    search_instruments,
+)
 from application.use_cases.manage_instruments import (
     add_instrument,
     list_instrument_views,
     remove_instrument,
     set_instrument_enabled,
 )
-from config.catalog import get_catalog_instruments
 
 router = APIRouter(tags=["instruments"], dependencies=[Depends(require_session)])
 
@@ -35,7 +47,8 @@ async def page(request: Request, context: ContextDep) -> Any:
         section="instruments",
         data={
             "instruments": await list_instrument_views(context),
-            "catalog": get_catalog_instruments(),
+            "catalog": await list_catalog_views(context, limit=DEFAULT_CATALOG_LIMIT),
+            "catalog_status": await catalog_status(context),
         },
     )
 
@@ -46,8 +59,81 @@ async def list_api(context: ContextDep) -> list[dict[str, object]]:
 
 
 @router.get("/api/instruments/catalog")
-async def catalog_api() -> list[dict[str, Any]]:
-    return get_catalog_instruments()
+async def catalog_api(
+    context: ContextDep,
+    query: str | None = Query(default=None, max_length=64),
+    instrument_type: str | None = Query(default=None, max_length=15),
+    tradable: bool = Query(default=True),
+    limit: int = Query(default=DEFAULT_CATALOG_LIMIT, ge=1, le=1000),
+) -> list[dict[str, Any]]:
+    """Каталог из сохранённых данных: поиск по тикеру, названию и ISIN."""
+    return await list_catalog_views(
+        context,
+        query=query,
+        instrument_types=[instrument_type] if instrument_type else None,
+        tradable_only=tradable,
+        limit=limit,
+    )
+
+
+@router.get("/api/instruments/search")
+async def search_api(
+    context: ContextDep,
+    query: str = Query(min_length=2, max_length=64),
+    instrument_type: str | None = Query(default=None, max_length=15),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[dict[str, Any]]:
+    """Поиск инструмента: сохранённый каталог + дозагрузка из FindInstrument."""
+    entries = await search_instruments(context, query, instrument_type=instrument_type, limit=limit)
+    return [catalog_view(entry) for entry in entries]
+
+
+@router.post("/api/instruments/catalog/refresh")
+async def catalog_refresh_api(
+    context: ContextDep,
+    _session: SessionDep,
+    instrument_type: list[str] | None = Query(default=None),
+) -> dict[str, Any]:
+    """Обновляет каталог из API и сохраняет его в БД."""
+    types = [item.strip().lower() for item in (instrument_type or []) if item.strip()]
+    try:
+        result = await refresh_instrument_catalog(context, instrument_types=types or None)
+    except Exception as exc:  # исключение наружу как 502 — текст уходит в GUI
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "types": list(result.types),
+        "fetched": result.fetched,
+        "updated_at": result.updated_at.isoformat(),
+    }
+
+
+@router.post("/instruments/catalog/refresh")
+async def catalog_refresh_form(
+    request: Request,
+    context: ContextDep,
+    _session: SessionDep,
+    instrument_type: list[str] = Form(default=[]),
+) -> Any:
+    """HTMX-обновление каталога: перерисовывает панель инструментов."""
+    types = [item.strip().lower() for item in instrument_type if item.strip()]
+    try:
+        result = await refresh_instrument_catalog(context, instrument_types=types or None)
+        message = (
+            f"Каталог обновлён из API: {result.fetched} инструментов ({', '.join(result.types)})"
+        )
+        error = ""
+    except Exception as exc:  # noqa: BLE001
+        message, error = "", str(exc)
+    return render_partial(
+        request,
+        "partials/instrument_catalog.html",
+        {
+            "catalog": await list_catalog_views(context, limit=DEFAULT_CATALOG_LIMIT),
+            "catalog_status": await catalog_status(context),
+            "message": message,
+            "error": error,
+        },
+    )
 
 
 @router.post("/api/instruments")

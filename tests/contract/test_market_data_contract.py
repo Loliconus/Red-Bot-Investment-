@@ -17,7 +17,13 @@ import pytest
 from adapters.driven.backtest.replay_adapter import BacktestReplayAdapter
 from core.domain.enums import Timeframe
 from core.domain.value_objects import OHLCV
-from tests.fakes import FakeMarketData, make_candles, make_instrument, make_orderbook
+from tests.fakes import (
+    FakeMarketData,
+    make_candles,
+    make_catalog_entry,
+    make_instrument,
+    make_orderbook,
+)
 
 NOW = __import__("datetime").datetime(
     2026, 1, 10, 10, 0, tzinfo=__import__("datetime").timezone.utc
@@ -28,8 +34,28 @@ def _candles() -> tuple[OHLCV, ...]:
     return make_candles(start=NOW - timedelta(days=9), count=10, timeframe=Timeframe.D1)
 
 
-def _replay(instrument: Any, data_dir: Any) -> BacktestReplayAdapter:
-    adapter = BacktestReplayAdapter(data_dir=data_dir, orderbook=make_orderbook())
+def _catalog(instrument: Any) -> list[Any]:
+    """Справочник инструментов, какой отдаёт InstrumentsService."""
+    return [
+        make_catalog_entry(
+            uid=instrument.uid,
+            ticker=instrument.ticker,
+            name="Сбербанк",
+            class_code=instrument.class_code,
+            lot_size=instrument.lot_size,
+        )
+    ]
+
+
+async def _replay(instrument: Any, data_dir: Any) -> BacktestReplayAdapter:
+    from tests.fakes import InMemoryRepository
+
+    # Каталог в бэктесте читается из хранилища: эмулируем сохранённые данные API.
+    repository = InMemoryRepository()
+    await repository.save_catalog_entries(_catalog(instrument))
+    adapter = BacktestReplayAdapter(
+        data_dir=data_dir, orderbook=make_orderbook(), repository=repository
+    )
     rows = [(c.timestamp, c.open, c.high, c.low, c.close, c.volume) for c in _candles()]
     adapter.load_from_rows(instrument.uid, Timeframe.D1, rows)
     return adapter
@@ -38,16 +64,17 @@ def _replay(instrument: Any, data_dir: Any) -> BacktestReplayAdapter:
 def _fake(instrument: Any, data_dir: Any = None) -> FakeMarketData:
     return FakeMarketData(
         {(instrument.uid, Timeframe.D1): _candles()},
+        catalog=_catalog(instrument),
         orderbook=make_orderbook(),
     )
 
 
 @pytest.fixture(params=["fake", "backtest_replay"])
-def adapter(request: pytest.FixtureRequest, tmp_path: Any) -> Any:
+async def adapter(request: pytest.FixtureRequest, tmp_path: Any) -> Any:
     instrument = make_instrument()
     if request.param == "fake":
         return _fake(instrument, tmp_path)
-    return _replay(instrument, tmp_path / "history")
+    return await _replay(instrument, tmp_path / "history")
 
 
 @pytest.fixture
@@ -120,3 +147,16 @@ async def test_get_api_indicator_returns_mapping(adapter: Any, instrument: Any) 
 async def test_aclose_is_idempotent(adapter: Any) -> None:
     await adapter.aclose()
     await adapter.aclose()
+
+
+async def test_resolve_instrument_uses_saved_catalog(adapter: Any, instrument: Any) -> None:
+    """Лот и UID берутся из справочника, а не из значений по умолчанию в коде."""
+    resolved = await adapter.resolve_instrument(instrument.ticker, instrument.class_code)
+    assert resolved.uid == instrument.uid
+    assert resolved.lot_size == instrument.lot_size
+
+
+async def test_search_instruments_finds_catalog_entry(adapter: Any, instrument: Any) -> None:
+    found = await adapter.search_instruments("Сбербанк")
+    assert [entry.ticker for entry in found] == [instrument.ticker]
+    assert found[0].uid == instrument.uid

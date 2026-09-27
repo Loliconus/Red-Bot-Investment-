@@ -57,6 +57,15 @@ async def bootstrap_database(ctx: AppContext) -> StrategyConfig:
         instrument.is_benchmark = bool(raw["is_benchmark"])
         await ctx.repository.save_instrument(instrument)
 
+    catalog_entries = await ctx.repository.count_catalog_entries()
+    if catalog_entries == 0:
+        # Каталог не хардкодится: без сети (бэктест/bootstrap) он просто пуст,
+        # поэтому явно просим обновить его в контуре с доступом к API.
+        logger.warning(
+            "instrument_catalog_empty",
+            reason="каталог загружается из API: обновите его в live/sandbox контуре",
+        )
+
     logger.info("database_bootstrapped", config_version=config.version)
     return config
 

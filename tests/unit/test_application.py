@@ -337,6 +337,12 @@ async def test_manage_instruments_add_and_remove(context: AppContext) -> None:
         list_instrument_views,
         remove_instrument,
     )
+    from tests.fakes import make_catalog_entry
+
+    # Параметры инструмента приходят из API: лот и UID — из ответа, не из кода.
+    context.market_data.set_catalog(
+        [make_catalog_entry(uid="uid-vtbr", ticker="VTBR", name="Банк ВТБ", lot_size=10000)]
+    )
 
     # Добавляем по тикеру
     inst = await add_instrument(context, "VTBR", "TQBR")
@@ -351,10 +357,30 @@ async def test_manage_instruments_add_and_remove(context: AppContext) -> None:
 
 async def test_manage_instruments_add_by_company_name(context: AppContext) -> None:
     from application.use_cases.manage_instruments import add_instrument
+    from tests.fakes import make_catalog_entry
+
+    context.market_data.set_catalog(
+        [make_catalog_entry(uid="uid-gazp", ticker="GAZP", name="Газпром", lot_size=10)]
+    )
 
     inst = await add_instrument(context, "Газпром (GAZP)", "TQBR")
     assert inst.ticker == "GAZP"
     assert inst.lot_size == 10
+
+
+async def test_manage_instruments_add_by_russian_name(context: AppContext) -> None:
+    """Название компании без тикера ищется через каталог/FindInstrument."""
+    from application.use_cases.manage_instruments import add_instrument
+    from tests.fakes import make_catalog_entry
+
+    context.market_data.set_catalog(
+        [make_catalog_entry(uid="uid-chmf", ticker="CHMF", name="Северсталь", lot_size=100)]
+    )
+
+    inst = await add_instrument(context, "Северсталь", "TQBR")
+    assert inst.ticker == "CHMF"
+    assert inst.uid == "uid-chmf"
+    assert "search_instruments:Северсталь" in context.market_data.calls
 
 
 async def test_manage_instruments_prevents_removing_benchmark(context: AppContext) -> None:

@@ -2,12 +2,56 @@
 
 from __future__ import annotations
 
+import re
+
 from application.composition import AppContext
-from config.catalog import extract_ticker, get_catalog_name
+from application.use_cases.manage_instrument_catalog import (
+    get_catalog_name,
+    search_instruments,
+)
 from core.domain.entities import Instrument
 
 MAX_TRADABLE = 5
 MIN_TRADABLE = 2
+
+#: Тикер Мосбиржи: латиница, цифры, дефис и подчёркивание.
+_TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,14}$")
+
+
+def extract_ticker(text: str) -> str:
+    """Извлекает чистый тикер из ввода пользователя ('VTBR (Банк ВТБ)' → 'VTBR').
+
+    Проверка по каталогу здесь невозможна и не нужна: каталог живёт в API и БД,
+    а разрешением символа занимается ``resolve_instrument``. Если ввода похож на
+    название компании, а не на тикер, поиск выполняется через каталог.
+    """
+    cleaned = text.strip()
+    match = re.search(r"\b([A-Z]{1,10})\b", cleaned.upper())
+    if match:
+        return match.group(1)
+    fallback = re.sub(r"[^A-Za-z0-9_-]", "", cleaned).upper()
+    return fallback or cleaned.upper()
+
+
+def _looks_like_ticker(value: str) -> bool:
+    return bool(_TICKER_PATTERN.fullmatch(value))
+
+
+async def _resolve_from_input(context: AppContext, ticker: str, class_code: str) -> Instrument:
+    """Разрешает ввод пользователя: тикер — напрямую, название — через поиск."""
+    symbol = extract_ticker(ticker).strip().upper()
+    if _looks_like_ticker(symbol):
+        return await context.market_data.resolve_instrument(symbol, class_code)
+
+    found = await search_instruments(context, ticker.strip(), limit=5)
+    for entry in found:
+        if not _looks_like_ticker(entry.ticker.upper()):
+            continue
+        return await context.market_data.resolve_instrument(
+            entry.ticker, entry.class_code or class_code
+        )
+    msg = f"Инструмент не найден по запросу '{ticker}': укажите тикер (например, SBER)"
+    raise ValueError(msg)
 
 
 async def list_instrument_views(context: AppContext) -> list[dict[str, object]]:
@@ -15,7 +59,7 @@ async def list_instrument_views(context: AppContext) -> list[dict[str, object]]:
         {
             "uid": i.uid,
             "ticker": i.ticker,
-            "name": get_catalog_name(i.ticker),
+            "name": await get_catalog_name(context, i.ticker),
             "class_code": i.class_code,
             "lot_size": i.lot_size,
             "benchmark": i.is_benchmark,
@@ -41,7 +85,7 @@ async def add_instrument(context: AppContext, ticker: str, class_code: str = "TQ
     if ticker == "IMOEX":
         raise ValueError("IMOEX — справочный бенчмарк, не торгуется")
 
-    instrument = await context.market_data.resolve_instrument(ticker, class_code)
+    instrument = await _resolve_from_input(context, raw_ticker, class_code)
     if any(i.uid == instrument.uid for i in context.instruments):
         msg = f"Инструмент {ticker} (UID: {instrument.uid}) уже добавлен в корзину"
         raise ValueError(msg)

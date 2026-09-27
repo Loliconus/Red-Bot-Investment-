@@ -24,6 +24,7 @@ import structlog
 
 from adapters.driven.storage.connection_pool import DuckDBConnectionPool
 from adapters.driven.storage.schema import INDEX_STATEMENTS, ddl_script, version_statement
+from core.domain.catalog import InstrumentCatalogEntry
 from core.domain.entities import (
     Instrument,
     InvalidationRule,
@@ -48,6 +49,10 @@ from core.ports.persistence import DecisionRecord, GuiAuditEntry, WsReplayEvent
 logger = structlog.get_logger(__name__)
 
 ZERO = Decimal("0")
+
+#: Размер пачки при пакетном upsert каталога: тысячи записей в одном запросе
+#: DuckDB не нужны, а список параметров не должен разрастаться.
+_CATALOG_BATCH = 200
 
 
 # ------------------------------------------------------------------ кодеки
@@ -624,6 +629,187 @@ class DuckDBRepository:
             currency=row[5],
         )
 
+    # ------------------------------------------------------------- каталог
+    #: Колонки таблицы ``instrument_catalog`` в порядке вставки и чтения.
+    _CATALOG_COLUMNS: tuple[str, ...] = (
+        "uid",
+        "ticker",
+        "class_code",
+        "name",
+        "lot_size",
+        "currency",
+        "instrument_type",
+        "isin",
+        "figi",
+        "api_trade_available",
+        "buy_available",
+        "sell_available",
+        "for_iis",
+        "for_qual_investor",
+        "exchange",
+        "sector",
+        "country_of_risk",
+        "liquidity_flag",
+        "min_price_increment",
+        "updated_at",
+    )
+
+    @staticmethod
+    def _catalog_values(entry: InstrumentCatalogEntry, updated_at: datetime) -> list[Any]:
+        return [
+            entry.uid,
+            entry.ticker,
+            entry.class_code,
+            entry.name,
+            entry.lot_size,
+            entry.currency,
+            entry.instrument_type,
+            entry.isin,
+            entry.figi,
+            entry.api_trade_available,
+            entry.buy_available,
+            entry.sell_available,
+            entry.for_iis,
+            entry.for_qual_investor,
+            entry.exchange,
+            entry.sector,
+            entry.country_of_risk,
+            entry.liquidity,
+            entry.min_price_increment,
+            updated_at,
+        ]
+
+    @classmethod
+    def _catalog_from_row(cls, row: tuple[Any, ...]) -> InstrumentCatalogEntry:
+        values = dict(zip(cls._CATALOG_COLUMNS, row, strict=True))
+        increment = values["min_price_increment"]
+        return InstrumentCatalogEntry(
+            uid=str(values["uid"]),
+            ticker=str(values["ticker"]),
+            class_code=str(values["class_code"]),
+            name=str(values["name"] or ""),
+            lot_size=int(values["lot_size"]),
+            currency=str(values["currency"] or "RUB"),
+            instrument_type=str(values["instrument_type"] or "share"),
+            isin=str(values["isin"] or ""),
+            figi=str(values["figi"] or ""),
+            api_trade_available=bool(values["api_trade_available"]),
+            buy_available=bool(values["buy_available"]),
+            sell_available=bool(values["sell_available"]),
+            for_iis=bool(values["for_iis"]),
+            for_qual_investor=bool(values["for_qual_investor"]),
+            exchange=str(values["exchange"] or ""),
+            sector=str(values["sector"] or ""),
+            country_of_risk=str(values["country_of_risk"] or ""),
+            liquidity=bool(values["liquidity_flag"]),
+            min_price_increment=_dec(increment) if increment is not None else None,
+            updated_at=_dt(values["updated_at"]) if values["updated_at"] else None,
+        )
+
+    async def save_catalog_entries(self, entries: Sequence[InstrumentCatalogEntry]) -> None:
+        """Пакетный upsert: каталог из API приходит пачкой на сотни записей."""
+        if not entries:
+            return
+        updated_at = datetime.now(tz=UTC)
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        row_placeholder = "(" + ", ".join("?" * len(self._CATALOG_COLUMNS)) + ")"
+        for start in range(0, len(entries), _CATALOG_BATCH):
+            chunk = entries[start : start + _CATALOG_BATCH]
+            placeholders = ", ".join(row_placeholder for _ in chunk)
+            params: list[Any] = []
+            for entry in chunk:
+                params.extend(self._catalog_values(entry, updated_at))
+            await self._arun(
+                f"INSERT OR REPLACE INTO instrument_catalog ({columns}) VALUES {placeholders}",
+                params,
+            )
+
+    async def delete_catalog_entries(self, instrument_types: Sequence[str]) -> None:
+        if not instrument_types:
+            return
+        placeholders = ", ".join("?" for _ in instrument_types)
+        await self._arun(
+            f"DELETE FROM instrument_catalog WHERE instrument_type IN ({placeholders})",
+            list(instrument_types),
+        )
+
+    def _catalog_where(
+        self,
+        *,
+        query: str | None,
+        instrument_types: Sequence[str] | None,
+        tradable_only: bool,
+    ) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if query:
+            needle = f"%{query.strip().upper()}%"
+            clauses.append(
+                "(UPPER(ticker) LIKE ? OR UPPER(name) LIKE ? OR UPPER(isin) LIKE ? "
+                "OR UPPER(figi) LIKE ? OR UPPER(uid) LIKE ?)"
+            )
+            params.extend([needle] * 5)
+        if instrument_types:
+            placeholders = ", ".join("?" for _ in instrument_types)
+            clauses.append(f"instrument_type IN ({placeholders})")
+            params.extend(instrument_types)
+        if tradable_only:
+            clauses.append("api_trade_available = TRUE AND buy_available = TRUE")
+        return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
+
+    async def list_catalog_entries(
+        self,
+        *,
+        query: str | None = None,
+        instrument_types: Sequence[str] | None = None,
+        tradable_only: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[InstrumentCatalogEntry]:
+        clause, params = self._catalog_where(
+            query=query,
+            instrument_types=instrument_types,
+            tradable_only=tradable_only,
+        )
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        rows = await self._arun(
+            f"SELECT {columns} FROM instrument_catalog{clause} "
+            "ORDER BY api_trade_available DESC, liquidity_flag DESC, ticker "
+            "LIMIT ? OFFSET ?",
+            [*params, min(max(limit, 1), 1000), max(offset, 0)],
+        )
+        return [self._catalog_from_row(row) for row in rows]
+
+    async def get_catalog_entry(self, uid: str) -> InstrumentCatalogEntry | None:
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        rows = await self._arun(f"SELECT {columns} FROM instrument_catalog WHERE uid = ?", [uid])
+        return self._catalog_from_row(rows[0]) if rows else None
+
+    async def find_catalog_entry(
+        self, ticker: str, class_code: str | None = None
+    ) -> InstrumentCatalogEntry | None:
+        """Точный поиск: класс-код обязателен, если задан — иначе неоднозначность."""
+        symbol = ticker.strip().upper()
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        if class_code:
+            rows = await self._arun(
+                f"SELECT {columns} FROM instrument_catalog WHERE ticker = ? AND class_code = ? "
+                "LIMIT 1",
+                [symbol, class_code.strip().upper()],
+            )
+        else:
+            rows = await self._arun(
+                f"SELECT {columns} FROM instrument_catalog WHERE ticker = ? LIMIT 1", [symbol]
+            )
+        return self._catalog_from_row(rows[0]) if rows else None
+
+    async def count_catalog_entries(self, instrument_types: Sequence[str] | None = None) -> int:
+        clause, params = self._catalog_where(
+            query=None, instrument_types=instrument_types, tradable_only=False
+        )
+        rows = await self._arun(f"SELECT count(*) FROM instrument_catalog{clause}", params)
+        return int(rows[0][0]) if rows else 0
+
     # ------------------------------------------------------------- портфель
     async def save_portfolio_state(self, state_json: str) -> None:
         await self._arun(
@@ -809,6 +995,8 @@ class DuckDBRepository:
     async def table_sizes(self) -> dict[str, int]:
         sizes: dict[str, int] = {}
         for table in (
+            "instruments",
+            "instrument_catalog",
             "candles",
             "market_snapshots",
             "decision_snapshots",
