@@ -46,9 +46,7 @@ async def resolve_managed_account_id(
     """Выбирает OPEN-счёт; не делает торговых операций и не пополняет баланс."""
     accounts = list(accounts) if accounts is not None else await broker.get_accounts()
     open_accounts = [
-        account
-        for account in accounts
-        if int(account.get("status", 0)) == OPEN_ACCOUNT_STATUS
+        account for account in accounts if int(account.get("status", 0)) == OPEN_ACCOUNT_STATUS
     ]
 
     if requested_account_id:

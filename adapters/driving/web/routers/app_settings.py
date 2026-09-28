@@ -8,12 +8,14 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 
 from adapters.driving.web.dependencies import ContextDep, SessionDep, require_session
 from adapters.driving.web.render import render_page, render_partial
+from application.use_cases.manage_account import get_account_overview
 from application.use_cases.manage_app_config import (
     load_default_mode,
     load_preferred_account_id,
     save_default_mode,
     set_account_preference,
 )
+from application.use_cases.manage_risk import get_risk_state, mask_account
 from application.use_cases.select_account import ACCOUNT_TYPE_LABELS, OPEN_ACCOUNT_STATUS
 from config.enums import ExecutionMode
 
@@ -23,11 +25,7 @@ router = APIRouter(tags=["app-settings"], dependencies=[Depends(require_session)
 def _sorted_open_accounts(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     priority = {1: 0, 2: 1, 3: 2}
     return sorted(
-        (
-            account
-            for account in accounts
-            if int(account.get("status", 0)) == OPEN_ACCOUNT_STATUS
-        ),
+        (account for account in accounts if int(account.get("status", 0)) == OPEN_ACCOUNT_STATUS),
         key=lambda account: (
             priority.get(int(account.get("type", 0)), 99),
             str(account.get("name", "")).casefold(),
@@ -48,10 +46,19 @@ async def page(request: Request, context: ContextDep) -> Any:
             accounts = _sorted_open_accounts(await get_accounts())
         except Exception:  # noqa: BLE001 - UI показывает недоступность, не секрет SDK детали
             accounts_error = "Список счетов сейчас недоступен. Проверьте соединение с брокером."
+
+    # Администрирование счетов переехало сюда из «Риска»: это функция запуска,
+    # а не лимитов. Sandbox-панель и визард используют те же use cases.
+    account_overview: dict[str, Any] | None = None
+    account_overview_error = ""
+    try:
+        account_overview = await get_account_overview(context)
+    except Exception:  # noqa: BLE001 - недоступность показываем честно
+        account_overview_error = "Данные счёта сейчас недоступны."
     return render_page(
         request,
         "pages/settings.html",
-        title="Настройки запуска",
+        title="Счёт и режим",
         section="settings",
         data={
             "execution_modes": list(ExecutionMode),
@@ -61,6 +68,10 @@ async def page(request: Request, context: ContextDep) -> Any:
             "accounts_error": accounts_error,
             "selected_account": selected_account or "auto",
             "account_type_labels": ACCOUNT_TYPE_LABELS,
+            "account": account_overview,
+            "account_overview_error": account_overview_error,
+            "risk": get_risk_state(context),
+            "masked_account": mask_account(context.active_account_id),
         },
     )
 

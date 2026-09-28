@@ -88,6 +88,9 @@ async def channel_snapshot(context: AppContext, channel: str) -> dict[str, Any] 
         ]
     if channel == "db_admin.jobs":
         return []
+    if channel == "reasoning.scan":
+        report = context.decision_scan_report
+        return report.summary() if report is not None else {}
     if channel in {"control.logs", "system.notifications"}:
         return []
     if channel.startswith("chart.") or channel.startswith("backtest."):

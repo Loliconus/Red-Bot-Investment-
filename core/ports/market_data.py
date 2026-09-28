@@ -25,6 +25,10 @@ from core.domain.value_objects import OHLCV, OrderbookSnapshot
 class MarketDataPort(Protocol):
     """Источник котировок, свечей, стакана, индикаторов и справочника инструментов."""
 
+    async def aclose(self) -> None:
+        """Останавливает стримы и закрывает сетевые соединения адаптера."""
+        ...
+
     async def get_candles(
         self,
         instrument: Instrument,

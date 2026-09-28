@@ -291,12 +291,13 @@ async def _run(
 
 def _build_scheduler(context: Any) -> Any:
     from application.scheduler import Scheduler, TaskSpec
-    from application.use_cases.make_decision import make_decision
     from application.use_cases.monitor_positions import monitor_positions
+    from application.use_cases.run_decision_cycle import run_decision_cycle
 
     async def decision_cycle() -> None:
-        for instrument in context.tradable_instruments:
-            await make_decision(context, instrument)
+        # Анализ каждой бумаги изолирован, ENTER исполняется через execute_plan;
+        # итог остаётся в context.decision_scan_report и виден в GUI.
+        await run_decision_cycle(context)
 
     async def monitor_cycle() -> None:
         await monitor_positions(context)

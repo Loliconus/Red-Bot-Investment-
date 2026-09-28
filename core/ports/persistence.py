@@ -55,11 +55,19 @@ class WsReplayEvent:
 class RepositoryPort(Protocol):
     """Хранилище снапшотов, планов, сделок и гипотез."""
 
+    async def aclose(self) -> None:
+        """Закрывает соединения и файловые дескрипторы хранилища."""
+        ...
+
     async def save_market_snapshot(self, snapshot: MarketSnapshot) -> UUID: ...
 
     async def save_decision_snapshot(self, snapshot: DecisionSnapshot) -> UUID: ...
 
     async def list_recent_decisions(self, limit: int = 50) -> list[DecisionRecord]: ...
+
+    async def list_decisions_since(self, since: datetime) -> list[DecisionRecord]:
+        """Все решения, созданные не раньше ``since`` (новые первыми)."""
+        ...
 
     async def save_trade_plan(self, plan: TradePlan) -> None: ...
 

@@ -9,6 +9,7 @@ from decimal import Decimal
 from application.composition import AppContext
 from application.use_cases.manage_app_config import save_preferred_account_id
 from application.use_cases.update_strategy_config import update_strategy_config
+from config.enums import ExecutionMode
 from core.risk.cost_model import estimate_costs, min_viable_target_pct
 
 ACCOUNT_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{4,64}$")

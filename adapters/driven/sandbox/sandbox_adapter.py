@@ -23,6 +23,7 @@ from adapters.driven.tbank.grpc_client import TInvestChannel
 from adapters.driven.tbank.mappers import money_value_to_decimal
 from adapters.driven.tbank.market_data_adapter import TBankMarketDataAdapter
 from adapters.driven.tbank.tls import configure_sdk_tls
+from config.enums import ExecutionMode
 from config.settings import Settings
 
 logger = structlog.get_logger(__name__)
@@ -32,7 +33,13 @@ class SandboxChannel(TInvestChannel):
     """Канал к ``sandbox-invest-public-api.tbank.ru:443``."""
 
     @classmethod
-    async def create(cls, settings: Settings) -> SandboxChannel:
+    async def create(
+        cls,
+        settings: Settings,
+        mode: ExecutionMode | None = None,
+    ) -> SandboxChannel:
+        # mode принимается для совместимости сигнатуры с TInvestChannel.create:
+        # sandbox-канал всегда указывает на песочный target независимо от контура.
         sandbox_client = _import_async_sandbox_client()
         configure_sdk_tls()
 

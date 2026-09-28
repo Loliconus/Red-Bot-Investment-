@@ -47,9 +47,7 @@ def test_settings_forbids_insecure_tls_in_live() -> None:
 
 def test_settings_forbids_tls_verification_bypass_in_sandbox() -> None:
     with pytest.raises(ValidationError, match="insecure_tls_dev_only"):
-        _settings(
-            tbank={"api_token": "t", "account_id": "a", "insecure_tls_dev_only": True}
-        )
+        _settings(tbank={"api_token": "t", "account_id": "a", "insecure_tls_dev_only": True})
 
 
 def test_settings_rejects_unofficial_api_targets() -> None:

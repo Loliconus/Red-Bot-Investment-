@@ -1,1 +1,10 @@
-<button class="decision-row" type="button" data-decision-id="{{ decision.id }}" data-decision="{{ decision.ticker }} {{ decision.decision }} {{ decision.thought_text }}" hx-get="/dashboard/decision/{{ decision.id }}" hx-target="#modal-root"><span class="decision-type decision-{{ decision.decision }}">{% if decision.decision == 'enter' %}↗{% elif decision.decision == 'reject' %}×{% else %}━{% endif %}</span><span class="decision-body"><strong>{{ decision.ticker }} <small>{{ decision.decision|upper }}</small></strong><span>{{ decision.thought_text }}</span></span><span class="decision-score">{{ decision.confluence_score }}</span><time class="mono muted" datetime="{{ decision.created_at }}">{{ decision.created_at[11:16] }}</time><span class="row-arrow">↗</span></button>
+<button class="decision-row" type="button" data-decision-id="{{ decision.id }}" data-decision="{{ decision.ticker }} {{ decision.decision }} {{ decision.thought_text }}" hx-get="/dashboard/decision/{{ decision.id }}" hx-target="#modal-root">
+  <span class="decision-type decision-{{ decision.decision }}">{% if decision.decision == 'enter' %}↗{% elif decision.decision == 'reject' %}×{% else %}━{% endif %}</span>
+  <span class="decision-body">
+    <strong>{{ decision.ticker }} <small>{{ decision.decision|upper }}</small></strong>
+    <span>{{ decision.thought_text }}</span>
+  </span>
+  <span class="decision-score {% if decision.risk_check_passed %}positive{% endif %}">{{ decision.confluence_score }}</span>
+  <time class="mono muted" datetime="{{ decision.created_at }}">{{ decision.created_at[11:16] }}</time>
+  <span class="row-arrow">↗</span>
+</button>

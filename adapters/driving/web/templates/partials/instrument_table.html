@@ -13,7 +13,7 @@
     </thead>
     <tbody>
       {% for item in instruments %}
-      <tr>
+      <tr class="{% if not item.enabled and not item.benchmark %}row-disabled{% endif %}">
         <td>
           <strong>{{ item.ticker }}</strong>
           <small class="table-sub">{{ item.name if item.name else item.class_code }}</small>
@@ -25,7 +25,7 @@
           {% if item.benchmark %}
             <span class="pill neutral">НЕ ТОРГУЕТСЯ</span>
           {% else %}
-            <div style="display:inline-flex;gap:6px;align-items:center;justify-content:flex-end;">
+            <div class="row-actions">
               <form hx-post="/instruments/{{ item.uid }}/toggle" hx-target="#instrument-table">
                 <input type="hidden" name="enabled" value="{{ 'false' if item.enabled else 'true' }}">
                 <button class="button small {% if item.enabled %}secondary{% else %}primary{% endif %}" type="submit">

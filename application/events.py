@@ -27,6 +27,13 @@ class DecisionRecorded:
     record: DecisionRecord
 
 
+@dataclass(frozen=True, slots=True)
+class DecisionCycleCompleted:
+    """Проход по корзине завершён: полный отчёт доступен в ``report``."""
+
+    report: Any
+
+
 class EventBus:
     """Простая in-process шина: ``тип события -> список обработчиков``."""
 

@@ -39,9 +39,7 @@ def account(account_id: str, account_type: int, *, status: int = 2) -> dict[str,
 
 
 async def test_account_resolution_prefers_regular_brokerage_then_iis_then_invest_box() -> None:
-    broker = AccountsBroker(
-        [account("invest-box", 3), account("iis", 2), account("regular", 1)]
-    )
+    broker = AccountsBroker([account("invest-box", 3), account("iis", 2), account("regular", 1)])
     selected = await resolve_managed_account_id(broker, mode=ExecutionMode.SANDBOX)
     assert selected == "regular"
 

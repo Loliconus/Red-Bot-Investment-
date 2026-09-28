@@ -1,0 +1,97 @@
+{# Живая часть «Мыслей бота»: перерисовывается после каждого цикла сканирования. #}
+<div class="inline-alert {% if reasoning.scan_report and reasoning.scan_report.errors %}danger{% elif reasoning.totals.enter %}success{% else %}neutral{% endif %} reasoning-hint" role="status">
+  <strong>ДОКЛАД ЦИКЛА:</strong> {{ reasoning.silence_hint }}
+</div>
+
+<section class="funnel" aria-label="Воронка решений за {{ reasoning.window_hours }} часов">
+  {% for stage in reasoning.funnel %}
+  <div class="funnel-stage">
+    <small>{{ stage.stage|upper }}</small>
+    <strong>{{ stage.count }}</strong>
+    {% set prev = reasoning.funnel[loop.index0 - 1].count if loop.index0 > 0 else none %}
+    <div class="funnel-bar"><i style="width: {{ ((stage.count / reasoning.funnel[0].count * 100) if reasoning.funnel[0].count else 0)|round|int }}%"></i></div>
+    {% if prev is not none %}<span class="funnel-conv">{{ (stage.count / prev * 100)|round|int if prev else 0 }}% от стадии</span>{% else %}<span class="funnel-conv">вход в воронку</span>{% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+<div class="reasoning-grid">
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">ПОЧЕМУ МОЛЧИМ</div><h2>Причины отказов</h2></div>
+      <span class="pill {% if reasoning.blockers %}warning{% else %}neutral{% endif %}">{{ reasoning.blockers|length }} КАТЕГОРИЙ</span>
+    </div>
+    {% if reasoning.blockers %}
+    <div class="blocker-list">
+      {% for blocker in reasoning.blockers %}
+      <div class="blocker-row">
+        <div class="blocker-head">
+          <strong>{{ blocker.label }}</strong>
+          <span class="mono">{{ blocker.count }} ×</span>
+          <span class="muted">{{ blocker.share }}%</span>
+        </div>
+        <div class="funnel-bar blocker-bar"><i style="width: {{ blocker.share }}%"></i></div>
+        <small>{{ blocker.example }}</small>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-subtle">Отказов за окно нет — все анализы завершились ENTER.</p>
+    {% endif %}
+    <p class="panel-note">Порог входа: confluence ≥ {{ reasoning.threshold }}. Меняется на странице «Стратегия», а не правкой кода.</p>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">ПОСЛЕДНИЙ ПРОХОД</div><h2>Отчёт цикла сканирования</h2></div>
+      {% if reasoning.scan_report %}<span class="pill neutral">{{ reasoning.scan_report.instruments }} БУМАГ · {{ reasoning.scan_report.duration_ms }} мс</span>{% endif %}
+    </div>
+    {% if reasoning.scan_report %}
+    <dl class="detail-list">
+      <div><dt>Завершён</dt><dd>{{ reasoning.scan_report.finished_at[:19]|replace('T', ' ') if reasoning.scan_report.finished_at else '—' }}</dd></div>
+      <div><dt>ENTER</dt><dd>{{ reasoning.scan_report.entered }}</dd></div>
+      <div><dt>Исполнено заявок</dt><dd>{{ reasoning.scan_report.executed }}</dd></div>
+      <div><dt>Ошибок по бумагам</dt><dd class="{% if reasoning.scan_report.errors %}negative{% endif %}">{{ reasoning.scan_report.errors }}</dd></div>
+    </dl>
+    <div class="mini-table">
+      {% for scan in reasoning.scan_report.scans %}
+      <div><span>{{ scan.ticker }}</span><strong class="scan-status scan-{{ scan.status }}">{{ scan.status|upper }}{% if scan.executed %} · ЗАЯВКА ИСПОЛНЕНА{% elif scan.order_status %} · ордер: {{ scan.order_status }}{% endif %}</strong></div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-subtle">Цикл в этом процессе ещё не завершался. Отчёт появится после первого прохода по корзине.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <div><div class="eyebrow">ПОКРЫТИЕ КОРЗИНЫ</div><h2>Что с каждой бумагой</h2></div>
+    <span class="panel-counter">{{ reasoning.coverage|length }} ИНСТРУМЕНТОВ</span>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table sortable-table">
+      <thead>
+        <tr><th data-sort="text">БУМАГА ↕</th><th data-sort="text">СОСТОЯНИЕ ↕</th><th data-sort="number">СКАНОВ ЗА ОКНО ↕</th><th data-sort="number">SCORE ↕</th><th>ПОСЛЕДНЯЯ ПРИЧИНА</th><th data-sort="text">ЧАС ↕</th></tr>
+      </thead>
+      <tbody>
+        {% for row in reasoning.coverage %}
+        <tr class="coverage-{{ row.state }}">
+          <td><strong>{{ row.ticker }}</strong></td>
+          <td><span class="state-chip state-{{ row.state }}"><i></i>{{ row.state_label }}</span></td>
+          <td class="mono">{{ row.scans }}</td>
+          <td class="mono {% if row.score is not none and row.score|float >= reasoning.threshold|float %}positive{% endif %}">{{ row.score or '—' }}</td>
+          <td class="coverage-reason">
+            {% if row.cycle_error %}<span class="negative">{{ row.cycle_error }}</span>
+            {% elif row.reason %}{{ row.reason }}
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="mono muted">{{ row.last_at[11:16] if row.last_at else '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="table-empty">Корзина пуста. Добавьте инструменты — бот начнёт сканировать.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>

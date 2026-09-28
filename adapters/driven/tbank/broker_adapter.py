@@ -300,11 +300,9 @@ class TBankBrokerAdapter:
 
     async def list_instruments(self) -> list[Instrument]:
         """Справочник доступных для торговли акций."""
-        from t_tech.invest.grpc.schemas import InstrumentStatus, InstrumentsRequest
+        from t_tech.invest.grpc.schemas import InstrumentsRequest, InstrumentStatus
 
-        request = InstrumentsRequest(
-            instrument_status=InstrumentStatus.INSTRUMENT_STATUS_BASE
-        )
+        request = InstrumentsRequest(instrument_status=InstrumentStatus.INSTRUMENT_STATUS_BASE)
         response = await retry_read_safe(
             lambda: self._channel.services.instruments.shares(request=request)
         )

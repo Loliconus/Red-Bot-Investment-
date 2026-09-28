@@ -37,9 +37,10 @@
           if (event.key === '?') { event.preventDefault(); this.openPalette('?'); return; }
           if (pendingG) {
             pendingG = false;
-            const paths = {c:'/control',d:'/',r:'/risk',i:'/instruments',j:'/journal',
-                           b:'/backtest',a:'/admin/storage',s:'/security',
-                           h:document.querySelector('.sidebar-nav a[title^="График"]')?.getAttribute('href')};
+            const paths = {d:'/',m:'/reasoning',i:'/instruments',s:'/strategy',r:'/risk',
+                           e:'/settings',j:'/journal',c:'/control',a:'/admin/storage',
+                           b:'/backtest',
+                           h:document.querySelector('.sidebar-nav a[title^="Рынок"]')?.getAttribute('href')};
             if (paths[event.key]) { event.preventDefault(); window.location.href = paths[event.key]; }
           } else if (event.key === 'g') {
             pendingG = true; setTimeout(() => { pendingG = false; }, 1300);

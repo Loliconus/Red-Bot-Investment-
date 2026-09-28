@@ -16,6 +16,7 @@ class Channel(StrEnum):
     SECURITY_AUDIT = "security.audit"
     CONTROL_LOGS = "control.logs"
     SYSTEM_NOTIFICATIONS = "system.notifications"
+    REASONING_SCAN = "reasoning.scan"
 
 
 DYNAMIC_CHANNEL = re.compile(r"^(chart\.[\w-]{1,80}|backtest\.[a-f0-9-]{8,36})$")

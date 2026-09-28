@@ -1,4 +1,8 @@
-"""Sidebar создаётся из конфигурации, base.html не меняется при расширении."""
+"""Sidebar создаётся из конфигурации, base.html не меняется при расширении.
+
+Структура следует мысли оператора: что бот делает → на каких правилах →
+что уже сделал → как им управлять. Одна функция = один раздел.
+"""
 
 from __future__ import annotations
 
@@ -11,18 +15,39 @@ class NavigationItem:
     label: str
     path: str
     icon: str
-    priority: str
+    group: str
+    hint: str
 
 
 NAVIGATION = (
-    NavigationItem("control", "Пульт управления", "/control", "◉", "P0"),
-    NavigationItem("settings", "Настройки запуска", "/settings", "⚙", "P0"),
-    NavigationItem("dashboard", "Дашборд", "/", "▦", "P1"),
-    NavigationItem("chart", "График", "/chart", "⌁", "P1"),
-    NavigationItem("instruments", "Инструменты и ТА", "/instruments", "◫", "P2"),
-    NavigationItem("risk", "Риск-модуль", "/risk", "⚠", "P0"),
-    NavigationItem("journal", "Журнал и самоанализ", "/journal", "≡", "P2"),
-    NavigationItem("backtest", "Backtest Runner", "/backtest", "◈", "P2"),
-    NavigationItem("storage", "Администрирование БД", "/admin/storage", "▤", "P0"),
-    NavigationItem("security", "Безопасность", "/security", "◇", "P0"),
+    # --- что бот делает прямо сейчас ------------------------------------
+    NavigationItem("dashboard", "Обзор", "/", "▤", "ТОРГОВЛЯ", "Пульс системы и портфель"),
+    NavigationItem(
+        "reasoning",
+        "Мысли бота",
+        "/reasoning",
+        "✦",
+        "ТОРГОВЛЯ",
+        "Воронка решений и причины молчания",
+    ),
+    NavigationItem("chart", "Рынок", "/chart", "▲", "ТОРГОВЛЯ", "График, стакан, контекст"),
+    # --- на каких правилах работает -------------------------------------
+    NavigationItem(
+        "instruments", "Инструменты", "/instruments", "◫", "СТРАТЕГИЯ", "Рабочая корзина и каталог"
+    ),
+    NavigationItem(
+        "strategy", "Стратегия", "/strategy", "∑", "СТРАТЕГИЯ", "Confluence, пороги, ТА"
+    ),
+    NavigationItem("risk", "Риск", "/risk", "⚠", "СТРАТЕГИЯ", "Лимиты и защита капитала"),
+    # --- что уже сделано --------------------------------------------------
+    NavigationItem("journal", "Журнал", "/journal", "≡", "УЧЁТ", "Сделки, гипотезы, самооценка"),
+    NavigationItem("backtest", "Бэктест", "/backtest", "◈", "УЧЁТ", "Проверка идей на истории"),
+    # --- как системой управлять -------------------------------------------
+    NavigationItem("control", "Пульт", "/control", "◉", "СИСТЕМА", "Запуск, пауза, задачи, логи"),
+    NavigationItem(
+        "storage", "Хранилище", "/admin/storage", "▦", "СИСТЕМА", "DuckDB, слои, SQL, бэкапы"
+    ),
+    NavigationItem(
+        "settings", "Счёт и режим", "/settings", "⚙", "СИСТЕМА", "Контур, счета, запуск"
+    ),
 )

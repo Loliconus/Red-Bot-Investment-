@@ -127,6 +127,8 @@ ignore = [
 "config/secrets_source.py" = ["S105", "S106"]
 "adapters/driven/storage/*.py" = ["S608"]
 "adapters/driven/backtest/replay_adapter.py" = ["S608"]
+# AccountSelectionRequired — публичный контракт CLI/GUI, имя задокументировано с 0.1
+"application/use_cases/select_account.py" = ["N818"]
 
 [tool.ruff.format]
 quote-style = "double"

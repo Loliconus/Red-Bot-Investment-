@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from core.domain.catalog import InstrumentCatalogEntry
 from core.domain.entities import Instrument, OrderResult, OrderState, PortfolioState, Position
@@ -49,7 +49,8 @@ def quotation_to_decimal(quotation: Any) -> Decimal:
         return ZERO
     from t_tech.invest.utils import quotation_to_decimal as sdk_quotation_to_decimal
 
-    return sdk_quotation_to_decimal(quotation)
+    # SDK не типизирован: функция документированно возвращает Decimal.
+    return cast(Decimal, sdk_quotation_to_decimal(quotation))
 
 
 def money_value_to_decimal(money: Any) -> Decimal:
@@ -58,7 +59,8 @@ def money_value_to_decimal(money: Any) -> Decimal:
         return ZERO
     from t_tech.invest.utils import money_to_decimal
 
-    return money_to_decimal(money)
+    # SDK не типизирован: функция документированно возвращает Decimal.
+    return cast(Decimal, money_to_decimal(money))
 
 
 def decimal_to_quotation(value: Decimal) -> Any:

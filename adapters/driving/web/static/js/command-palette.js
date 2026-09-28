@@ -11,8 +11,9 @@
   links.push({label:'Kill-switch · остановить бот',url:'/security',category:'КРИТИЧЕСКОЕ',hint:'Подтверждение на странице',icon:'■'});
   links.push({label:'Перезапуск scheduler',url:'/control',category:'УПРАВЛЕНИЕ',hint:'Пульт управления',icon:'↻'});
   let rows = [], active = 0, pending;
-  const shortcuts = ['Ctrl/Cmd + K · открыть палитру','g, затем c/d/r/i/j/b/a/s · перейти к разделу',
-                     'g, затем h · график','Ctrl + Enter · SQL-консоль','Esc · закрыть модал','? · показать клавиши'];
+  const shortcuts = ['Ctrl/Cmd + K · открыть палитру','g, затем d · обзор','g, затем m · мысли бота',
+                     'g, затем h · график','g, затем i/s/r/e/j/c/a/b · разделы',
+                     'Ctrl + Enter · SQL-консоль','Esc · закрыть модал','? · показать клавиши'];
   function render(list) {
     rows = list.slice(0, 25); active = 0; results.replaceChildren();
     if (!rows.length) { const empty = document.createElement('div'); empty.className='empty-subtle'; empty.textContent='Нет совпадений'; results.append(empty); return; }

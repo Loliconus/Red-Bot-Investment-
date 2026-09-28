@@ -29,21 +29,35 @@ attribution are under `static/vendor/` and on `/chart/{uid}`.
 
 ## Screens and operational constraints
 
-- P0 `/control`, `/risk`, `/admin/storage`, `/security`: HTTP forms remain
+Navigation is a fixed constructivist sidebar (Обзор `/`, Мысли бота `/reasoning`,
+Рынок `/chart/{uid}`, Инструменты `/instruments`, Стратегия `/strategy`,
+Риск `/risk`, Счёт и режим `/settings`, Журнал `/journal`, Пульт `/control`,
+Хранилище `/admin/storage`, Бэктест `/backtest`). `/security` stays out of the
+menu and opens from «Счёт и режим» and «Пульт». API paths did **not** move:
+risk forms still post to `/risk/*`, sandbox/account admin to `/risk/account/*`,
+control to `/control/*`, kill-challenge to `/security/kill/*`.
+
+- P0 `/control`, `/security`, `/settings`, `/risk`: HTTP forms remain
   available when WS disconnects. Hard Stop is latched until full application
   restart and cannot be released via GUI (unlike soft pause). Restore requires
   a stopped scheduler, an exact typed confirmation and validated checksums;
   the GUI must then be restarted before trading. Broker API tokens are write-only
   in the GUI and the storage system must provide a usable keyring. Enabling
   counter-trend trading requires an explicit typed confirmation.
-- P1 `/`, `/chart/{uid}`: decisions are fetched from the repository and replayed
-  after WS reconnect. Resource levels distinguish unavailable from zero.
-  Benchmark series, Fibonacci and live chart updates reflect available inputs.
+- P1 `/`, `/reasoning`: decisions are fetched from the repository and replayed
+  after WS reconnect. «Мысли бота» adds the scan funnel, grouped rejection
+  reasons (`decision_diagnostics.reasoning_overview`), per-instrument coverage
+  and the last `DecisionCycleReport`; it refreshes live on the
+  `reasoning.scan` channel. Resource levels distinguish unavailable from zero.
   MOEX phase is an **approximation**, not an exchange trading calendar.
+- P1 `/strategy`: confluence threshold and module weights post to
+  `/strategy/scoring` and are persisted as a new `strategy_configs` version via
+  `update_strategy_config`. TA parameter editing is still disabled until
+  versioned use cases are implemented. `/chart/{uid}` renders benchmark,
+  Fibonacci, plan markers and live updates from available inputs.
 - P2 `/instruments`, `/journal`: instrument enable/disable is persisted; approval
   of a hypothesis records a reviewed state **without** applying unspecified
-  numeric strategy changes. TA parameter editing is disabled until versioned
-  use cases are implemented. The instrument catalog is loaded from
+  numeric strategy changes. The instrument catalog is loaded from
   `InstrumentsService` and persisted in DuckDB (`instrument_catalog`) — no
   ticker, lot size or UID is hardcoded; GUI search, backtest and the add-form
   read the saved catalog, and a refresh action re-fetches it from the API.

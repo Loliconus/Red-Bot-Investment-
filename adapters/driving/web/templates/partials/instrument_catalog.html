@@ -4,9 +4,9 @@
 {% if message %}<div class="inline-alert success">{{ message }}</div>{% endif %}
 {% if error %}<div class="inline-alert danger">{{ error }}</div>{% endif %}
 
-<div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+<div class="catalog-head">
   <div class="eyebrow">КАТАЛОГ ИНСТРУМЕНТОВ ИЗ API</div>
-  <form hx-post="/instruments/catalog/refresh" hx-target="#instrument-catalog" hx-swap="innerHTML" style="margin: 0;">
+  <form hx-post="/instruments/catalog/refresh" hx-target="#instrument-catalog" hx-swap="innerHTML">
     <button type="submit" class="button small secondary" title="Загрузить справочник из InstrumentsService и сохранить в БД">
       ↻ Обновить из API
     </button>
@@ -14,34 +14,32 @@
 </div>
 
 {% if catalog_status %}
-  <p style="font-size: 11px; color: var(--muted); margin: 0 0 10px;">
-    Сохранено в БД: <strong>{{ catalog_status.count }}</strong> инструментов
-    {% if catalog_status.updated_at %}· обновлено {{ catalog_status.updated_at[:19].replace('T', ' ') }} UTC{% endif %}
-    {% if catalog_status.stale %}<span class="pill neutral">ТРЕБУЕТСЯ ОБНОВЛЕНИЕ</span>{% endif %}
-  </p>
+<p class="catalog-status">
+  Сохранено в БД: <strong>{{ catalog_status.count }}</strong> инструментов
+  {% if catalog_status.updated_at %}· обновлено {{ catalog_status.updated_at[:19].replace('T', ' ') }} UTC{% endif %}
+  {% if catalog_status.stale %}<span class="pill neutral">ТРЕБУЕТСЯ ОБНОВЛЕНИЕ</span>{% endif %}
+</p>
 {% endif %}
 
 {% if catalog %}
-  <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
-    {% for cat in catalog[:12] %}
-      <button type="button" class="button small secondary" onclick="selectQuickTicker('{{ cat.ticker }}', '{{ cat.class_code }}')">{{ cat.name or cat.ticker }} ({{ cat.ticker }})</button>
-    {% endfor %}
-  </div>
+<div class="catalog-chips">
+  {% for cat in catalog[:12] %}
+  <button type="button" class="button small secondary" onclick="selectQuickTicker('{{ cat.ticker }}', '{{ cat.class_code }}')">{{ cat.name or cat.ticker }} ({{ cat.ticker }})</button>
+  {% endfor %}
+</div>
 
-  <div style="margin-bottom: 14px;">
-    <label style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">
-      Или выберите инструмент из каталога:
-    </label>
-    <select id="catalog-picker" onchange="if(this.value){ selectCatalogInstrument(this.value); }" style="width: 100%; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--text);">
-      <option value="">-- Выберите инструмент из списка --</option>
-      {% for cat in catalog %}
-        <option value="{{ cat.ticker }}|{{ cat.class_code }}">{{ cat.name or cat.ticker }} ({{ cat.ticker }}, лот {{ cat.lot_size }} шт., {{ cat.class_code }})</option>
-      {% endfor %}
-    </select>
-  </div>
+<div class="catalog-picker-block">
+  <label for="catalog-picker">Или выберите инструмент из каталога:</label>
+  <select id="catalog-picker" onchange="if(this.value){ selectCatalogInstrument(this.value); }">
+    <option value="">-- Выберите инструмент из списка --</option>
+    {% for cat in catalog %}
+    <option value="{{ cat.ticker }}|{{ cat.class_code }}">{{ cat.name or cat.ticker }} ({{ cat.ticker }}, лот {{ cat.lot_size }} шт., {{ cat.class_code }})</option>
+    {% endfor %}
+  </select>
+</div>
 {% else %}
-  <div class="inline-alert warning">
-    Каталог пуст. Нажмите «Обновить из API» в контуре live или sandbox —
-    справочник загрузится из <code>InstrumentsService</code> и сохранится в БД.
-  </div>
+<div class="inline-alert warning">
+  Каталог пуст. Нажмите «Обновить из API» в контуре live или sandbox —
+  справочник загрузится из <code>InstrumentsService</code> и сохранится в БД.
+</div>
 {% endif %}

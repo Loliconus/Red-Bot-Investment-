@@ -1,1 +1,7 @@
-{% if rows %}<div class="task-log-list">{% for row in rows %}<div><span>{{ row.ts[11:19] }}</span> <b>{{ row.level }}</b> {{ row.message }}</div>{% endfor %}</div>{% else %}<p class="empty-subtle">Записей по этой задаче пока нет.</p>{% endif %}
+{% if rows %}
+<div class="task-log-list">
+  {% for row in rows %}<div><span>{{ row.ts[11:19] }}</span> <b>{{ row.level }}</b> {{ row.message }}</div>{% endfor %}
+</div>
+{% else %}
+<p class="empty-subtle">Записей по этой задаче пока нет.</p>
+{% endif %}

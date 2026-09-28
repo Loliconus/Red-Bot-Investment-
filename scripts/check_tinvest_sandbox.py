@@ -101,6 +101,11 @@ def _field_numbers(message_type: type[Any]) -> dict[str, int]:
 
 def verify_sdk_schema() -> list[str]:
     """Fail if SDK request fields/numbers no longer match the API proto."""
+    from t_tech.invest.grpc.sandbox import (
+        CloseSandboxAccountRequest,
+        OpenSandboxAccountRequest,
+        SandboxPayInRequest,
+    )
     from t_tech.invest.grpc.schemas import (
         CancelOrderRequest,
         CandleInstrument,
@@ -125,11 +130,6 @@ def verify_sdk_schema() -> list[str]:
         SubscribeCandlesRequest,
         SubscriptionAction,
         SubscriptionInterval,
-    )
-    from t_tech.invest.grpc.sandbox import (
-        CloseSandboxAccountRequest,
-        OpenSandboxAccountRequest,
-        SandboxPayInRequest,
     )
 
     request_types = {
@@ -245,7 +245,8 @@ def verify_sdk_schema() -> list[str]:
     checked.append("CandleInterval/Orders/InstrumentStatus/Subscription/TechnicalAnalysis enums")
 
     # Response fields consumed by adapters/mappers are part of the contract too.
-    from t_tech.invest.grpc import schemas, sandbox as sandbox_schemas
+    from t_tech.invest.grpc import sandbox as sandbox_schemas
+    from t_tech.invest.grpc import schemas
 
     response_fields = {
         "GetAccountsResponse": {"accounts"},

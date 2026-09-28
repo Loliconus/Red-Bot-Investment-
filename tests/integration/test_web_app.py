@@ -278,6 +278,9 @@ async def test_gui_pages_render(client: Any, context: AppContext) -> None:
         "/security",
         "/admin/storage",
         "/",
+        "/reasoning",
+        "/strategy",
+        "/settings",
         "/instruments",
         "/chart/uid-sber",
         "/journal",
@@ -287,6 +290,62 @@ async def test_gui_pages_render(client: Any, context: AppContext) -> None:
         assert response.status_code == 200, f"{path}: {response.text[:600]}"
         assert "Red-Bot Control Panel" in response.text, path
         assert "/static/css/app.css" in response.text, path
+
+
+async def test_reasoning_pages_and_api(client: Any, context: AppContext) -> None:
+    _login(client)
+    await context.repository.save_instrument(seed_instrument("uid-sber", "SBER", 10))
+    context.instruments = await context.repository.list_instruments()
+
+    page = client.get("/reasoning")
+    assert page.status_code == 200, page.text[:600]
+    assert "Мысли бота" in page.text
+    assert "воронка" in page.text.lower()
+    assert "SBER" in page.text
+
+    fragment = client.get("/reasoning/live")
+    assert fragment.status_code == 200
+    assert "funnel" in fragment.text
+
+    payload = client.get("/api/reasoning").json()
+    assert payload["window_hours"] == 24
+    assert len(payload["funnel"]) == 4
+    assert payload["coverage"][0]["ticker"] == "SBER"
+    assert payload["coverage"][0]["state"] == "never"
+
+
+async def test_strategy_page_and_scoring_update(client: Any, context: AppContext) -> None:
+    import re
+
+    _login(client)
+    page = client.get("/strategy")
+    assert page.status_code == 200, page.text[:600]
+    assert "Стратегия" in page.text
+    assert "confluence_threshold" in page.text
+    assert "w_fibonacci" in page.text
+
+    csrf_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', page.text)
+    assert csrf_match is not None
+    csrf = csrf_match.group(1)
+    version = context.config.version
+    ok = client.post(
+        "/strategy/scoring",
+        data={"confluence_threshold": "0.45", "w_fibonacci": "0.2"},
+        headers={"X-Red-Bot-CSRF": csrf},
+    )
+    assert ok.status_code == 200, ok.text
+    assert "новая версия" in ok.text.lower() or "Сохранено" in ok.text
+    assert context.config.version == version + 1
+    assert str(context.config.confluence_threshold) == "0.45"
+
+    bad = client.post(
+        "/strategy/scoring",
+        data={"confluence_threshold": "7"},
+        headers={"X-Red-Bot-CSRF": csrf},
+    )
+    assert bad.status_code == 422
+    assert "0.00 — 1.00" in bad.text
+    assert context.config.version == version + 1
 
 
 async def test_instruments_page_renders_saved_catalog(client: Any, context: AppContext) -> None:
