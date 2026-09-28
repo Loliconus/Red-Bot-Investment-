@@ -5,12 +5,12 @@
   const uid = root.dataset.chartUid;
   const container = document.getElementById('price-chart');
   const oscillator = document.getElementById('oscillator-chart');
-  let chart, candleSeries, oscChart, rsiSeries, macdSeries, imoexSeries;
+  let chart, candleSeries, oscChart, rsiSeries, macdSeries, imoexSeries, volumeSeries;
   let fibLines = [], markerLines = [], frame = '1d', series = [], latestBook = null, pendingBar = null, lastTick = 0;
   const toBar = b => ({time:b.time,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close)});
   const colors = () => document.documentElement.dataset.theme === 'light'
-    ? {background:'#ffffff',text:'#607883',grid:'#e5edef',up:'#178764',down:'#be4653'}
-    : {background:'#121e2b',text:'#8295a4',grid:'#233345',up:'#62dcb0',down:'#f1757c'};
+    ? {background:'#faf3e2',text:'#6d5c43',grid:'#d3c5a5',up:'#8a6b1c',down:'#c22b17'}
+    : {background:'#201912',text:'#a8906f',grid:'#3a2d20',up:'#d9a441',down:'#e8452c'};
   function initChart() {
     if (!window.LightweightCharts) {
       container.innerHTML = '<div class="chart-loading">Библиотека графика недоступна. Остальные экраны работают.</div>';
@@ -28,14 +28,18 @@
       upColor:palette.up,downColor:palette.down,borderUpColor:palette.up,
       borderDownColor:palette.down,wickUpColor:palette.up,wickDownColor:palette.down,
     });
+    volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
+      priceFormat:{type:'volume'},priceScaleId:'',color:palette.up,
+    });
+    chart.priceScale('').applyOptions({scaleMargins:{top:.86,bottom:0}});
     oscillator.textContent = '';
     oscChart = LightweightCharts.createChart(oscillator, {width:oscillator.clientWidth,height:120,
       layout:{background:{type:'solid',color:palette.background},textColor:palette.text,fontSize:9},
       grid:{vertLines:{visible:false},horzLines:{color:palette.grid}},
       timeScale:{timeVisible:true,visible:false},rightPriceScale:{borderVisible:false,scaleMargins:{top:.15,bottom:.15}},
     });
-    rsiSeries = oscChart.addSeries(LightweightCharts.LineSeries,{color:'#f2bc63',lineWidth:2,priceLineVisible:false});
-    macdSeries = oscChart.addSeries(LightweightCharts.LineSeries,{color:'#62dcb0',lineWidth:1,priceLineVisible:false});
+    rsiSeries = oscChart.addSeries(LightweightCharts.LineSeries,{color:'#e8452c',lineWidth:2,priceLineVisible:false});
+    macdSeries = oscChart.addSeries(LightweightCharts.LineSeries,{color:'#d9a441',lineWidth:1,priceLineVisible:false});
     chart.timeScale().subscribeVisibleLogicalRangeChange(range => { if (range) oscChart.timeScale().setVisibleLogicalRange(range); });
     chart.subscribeCrosshairMove(param => {
       if (!param.time) return;
@@ -55,7 +59,7 @@
     if (!document.querySelector('[data-overlay="fib"]')?.checked) return;
     const weight = reasoning?.reasoning?.find(step => step.module === 'fibonacci')?.weight || '—';
     Object.entries(fibonacci || {}).filter(([name]) => name.startsWith('fib_')).forEach(([name,price]) => {
-      fibLines.push(candleSeries.createPriceLine({price:Number(price), color:'#f2bc63',lineWidth:1,
+      fibLines.push(candleSeries.createPriceLine({price:Number(price), color:'#d9a441',lineWidth:1,
         lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,
         title:`${name.replace('fib_','Fibo ')} / вклад ${weight}`}));
     });
@@ -64,7 +68,7 @@
     markerLines.forEach(line => candleSeries.removePriceLine(line)); markerLines=[];
     if (!document.querySelector('[data-overlay="markers"]')?.checked) return;
     (markers || []).forEach(marker => {
-      markerLines.push(candleSeries.createPriceLine({price:Number(marker.price),color:'#62dcb0',
+      markerLines.push(candleSeries.createPriceLine({price:Number(marker.price),color:'#e8452c',
         lineStyle:LightweightCharts.LineStyle.Dashed,lineWidth:1,
         title:`Вход ${marker.status} · TradePlan ${marker.plan_id.slice(0,8)}`}));
     });
@@ -72,10 +76,18 @@
   function applyBenchmark(benchmark) {
     if (imoexSeries) { chart.removeSeries(imoexSeries); imoexSeries=null; }
     if (!document.querySelector('[data-overlay="imoex"]')?.checked || !benchmark?.length) return;
-    imoexSeries = chart.addSeries(LightweightCharts.LineSeries, {color:'#99a9b5',lineWidth:1,
+    imoexSeries = chart.addSeries(LightweightCharts.LineSeries, {color:'#77644a',lineWidth:1,
       priceScaleId:'left',priceLineVisible:false,lastValueVisible:false});
     chart.priceScale('left').applyOptions({visible:true,scaleMargins:{top:.8,bottom:0}});
     imoexSeries.setData(benchmark.map(b => ({time:b.time,value:Number(b.value)})));
+  }
+  function applyVolume(bars) {
+    if (!volumeSeries) return;
+    const palette = colors();
+    if (!document.querySelector('[data-overlay="volume"]')?.checked) { volumeSeries.setData([]); return; }
+    volumeSeries.setData((bars || []).map(b => ({
+      time:b.time,value:Number(b.volume)||0,color:Number(b.close)>=Number(b.open)?palette.up:palette.down,
+    })));
   }
   function ema(values, period) {
     const alpha = 2/(period+1); let prev=values[0];
@@ -129,7 +141,7 @@
       if (!response.ok) throw new Error(`Нет данных: HTTP ${response.status}`);
       currentData=await response.json();
       series=currentData.bars.map(toBar);
-      candleSeries.setData(series);oscillators(series);
+      candleSeries.setData(series);oscillators(series);applyVolume(currentData.bars);
       chart.timeScale().fitContent();oscChart.timeScale().fitContent();
       applyFib(currentData.fibonacci,currentData.reasoning);
       applyMarkers(currentData.markers);applyBenchmark(currentData.benchmark);
@@ -144,6 +156,7 @@
     if (box.dataset.overlay==='fib') applyFib(currentData.fibonacci,currentData.reasoning);
     if (box.dataset.overlay==='markers') applyMarkers(currentData.markers);
     if (box.dataset.overlay==='imoex') applyBenchmark(currentData.benchmark);
+    if (box.dataset.overlay==='volume') applyVolume(currentData.bars);
     if (box.dataset.overlay==='mfe' && box.checked) window.redBotToast?.('MFE/MAE: нет фактических наблюдений для оверлея','warning');
   }));
   const subscribe=()=>{

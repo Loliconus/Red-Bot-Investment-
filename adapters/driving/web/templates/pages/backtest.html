@@ -1,5 +1,31 @@
 {% extends 'base.html' %}
 {% block content %}
-<section class="page-heading"><div><div class="eyebrow">07 / ИСТОРИЧЕСКАЯ ПРОВЕРКА <span class="eyebrow-line"></span> ПРИОРИТЕТ P2</div><h1>Backtest Runner</h1><p>Отдельный контур проверки гипотез без риска для торгового процесса.</p></div><span class="heading-meta">ИЗОЛИРОВАНО ОТ LIVE</span></section>
-<section class="panel backtest-panel"><div class="panel-head"><div><div class="eyebrow">ПАРАМЕТРЫ ПРОГОНА</div><h2>Новый прогон</h2></div><span class="pill warning">НЕ ПОДКЛЮЧЕН</span></div><div class="two-column"><div class="compact-form"><div class="form-row"><label>Начало<input type="date" disabled></label><label>Конец<input type="date" disabled></label></div><label>Режим<select disabled><option>Простой</option><option>Walk-forward</option></select></label><label>In-sample, %<input type="range" min="30" max="90" value="60" disabled></label></div><div class="compact-form"><strong>Инструменты</strong>{% for instrument in instruments %}<label class="checkbox-label"><input type="checkbox" checked disabled> {{ instrument.ticker }}</label>{% else %}<p class="empty-subtle">Активных инструментов нет.</p>{% endfor %}<button class="button secondary" disabled>▶ Запустить</button></div></div><div class="inline-alert warning">Запуск отключён до подключения изолированного backtest use case. Результаты и equity curve не будут выдуманы по неполной истории.</div></section>
+<section class="page-heading">
+  <div>
+    <div class="eyebrow">№ 11 · ИСТОРИЧЕСКАЯ ПРОВЕРКА <span class="eyebrow-line"></span> ПРИОРИТЕТ P2</div>
+    <h1>Бэктест</h1>
+    <p>Отдельный контур проверки гипотез без риска для торгового процесса.</p>
+  </div>
+  <span class="heading-meta">ИЗОЛИРОВАНО ОТ LIVE</span>
+</section>
+
+<section class="panel backtest-panel">
+  <div class="panel-head">
+    <div><div class="eyebrow">ПАРАМЕТРЫ ПРОГОНА</div><h2>Новый прогон</h2></div>
+    <span class="pill warning">НЕ ПОДКЛЮЧЕН</span>
+  </div>
+  <div class="two-column">
+    <div class="compact-form">
+      <div class="form-row"><label>Начало<input type="date" disabled></label><label>Конец<input type="date" disabled></label></div>
+      <label>Режим<select disabled><option>Простой</option><option>Walk-forward</option></select></label>
+      <label>In-sample, %<input type="range" min="30" max="90" value="60" disabled></label>
+    </div>
+    <div class="compact-form">
+      <strong>Инструменты</strong>
+      {% for instrument in instruments %}<label class="checkbox-label"><input type="checkbox" checked disabled> {{ instrument.ticker }}</label>{% else %}<p class="empty-subtle">Активных инструментов нет.</p>{% endfor %}
+      <button class="button secondary" disabled>▶ Запустить</button>
+    </div>
+  </div>
+  <div class="inline-alert warning">Запуск отключён до подключения изолированного backtest use case. Результаты и equity curve не будут выдуманы по неполной истории.</div>
+</section>
 {% endblock %}

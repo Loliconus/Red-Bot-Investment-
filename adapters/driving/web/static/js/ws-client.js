@@ -5,7 +5,8 @@
   const SECTION = document.body.dataset.section;
   const channels = ['system.mode','system.resources','system.tasks','system.notifications'];
   if (SECTION === 'control') channels.push('control.logs');
-  if (SECTION === 'dashboard') channels.push('dashboard.decisions');
+  if (SECTION === 'dashboard' || SECTION === 'reasoning') channels.push('dashboard.decisions');
+  if (SECTION === 'reasoning') channels.push('reasoning.scan');
   if (SECTION === 'journal') channels.push('journal.hypotheses');
   if (SECTION === 'storage') channels.push('db_admin.jobs');
   if (SECTION === 'security') channels.push('security.audit');
@@ -225,5 +226,9 @@
   register('db_admin.jobs', ({type}) => {
     if (type === 'snapshot') return;
     document.body.dispatchEvent(new Event('db-jobs-updated'));
+  });
+  register('reasoning.scan', ({type}) => {
+    if (type === 'snapshot') return;
+    document.body.dispatchEvent(new Event('reasoning-scan-updated'));
   });
 })();

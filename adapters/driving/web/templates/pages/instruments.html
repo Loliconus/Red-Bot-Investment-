@@ -2,137 +2,64 @@
 {% block content %}
 <section class="page-heading">
   <div>
-    <div class="eyebrow">04 / КОНФИГУРАЦИЯ КОРЗИНЫ <span class="eyebrow-line"></span> ПРИОРИТЕТ P2</div>
-    <h1>Инструменты и ТА</h1>
-    <p>Управление рабочей корзиной (2–5 активных инструментов). IMOEX используется как справочный бенчмарк.</p>
+    <div class="eyebrow">№ 04 · СПИСОК РАБОТНИКОВ <span class="eyebrow-line"></span> КОНФИГУРАЦИЯ</div>
+    <h1>Инструменты</h1>
+    <p>Рабочая корзина — 2–5 активных бумаг. IMOEX участвует как справочный бенчмарк и не торгуется.</p>
   </div>
   <span class="heading-meta">{{ instruments|length }} В КОРЗИНЕ</span>
 </section>
 
 <div class="two-column instruments-layout">
-  <!-- Панель управления инструментами -->
   <section class="panel instruments-table-panel">
     <div class="panel-head">
-      <div>
-        <div class="eyebrow">ТОРГОВАЯ КОРЗИНА</div>
-        <h2>Инструменты корзины</h2>
-      </div>
+      <div><div class="eyebrow">ТОРГОВАЯ КОРЗИНА</div><h2>Бумаги в работе</h2></div>
       <span class="pill neutral">2 — 5 АКТИВНЫХ</span>
     </div>
 
-    <div id="instrument-table">
-      {% include 'partials/instrument_table.html' %}
-    </div>
+    <div id="instrument-table">{% include 'partials/instrument_table.html' %}</div>
 
-    <!-- Каталог инструментов: данные из API, сохранённые в БД -->
-    <div id="instrument-catalog" style="padding: 16px 20px 0;">
-      {% include 'partials/instrument_catalog.html' %}
-    </div>
+    <div id="instrument-catalog" class="instrument-catalog-box">{% include 'partials/instrument_catalog.html' %}</div>
 
-    <!-- Форма добавления инструмента -->
-    <form hx-post="/instruments/add" hx-target="#instrument-table" class="instrument-form" style="padding-top: 4px;">
-      <label>
-        Тикер или название
+    <form hx-post="/instruments/add" hx-target="#instrument-table" class="instrument-form">
+      <label>Тикер или название
         <input type="text" id="instrument-ticker-input" name="ticker" list="ticker-options" placeholder="SBER или Сбербанк" required maxlength="64" autocomplete="off">
         <datalist id="ticker-options">
-          {% for cat in catalog|default([]) %}
-            <option value="{{ cat.ticker }}">{{ cat.name }} ({{ cat.class_code }})</option>
-          {% endfor %}
+          {% for cat in catalog|default([]) %}<option value="{{ cat.ticker }}">{{ cat.name }} ({{ cat.class_code }})</option>{% endfor %}
         </datalist>
       </label>
-      <label>
-        Класс
+      <label>Класс
         <input type="text" id="instrument-class-input" name="class_code" value="TQBR" required maxlength="15">
       </label>
-      <button type="submit" class="button primary">+ Добавить</button>
+      <button type="submit" class="button primary">+ Принять в корзину</button>
     </form>
-
-    <p class="panel-note">
-      Введите тикер (VTBR, GAZP) или русское название компании (Сбербанк, Яндекс) — инструмент будет найден через API.
-      Лот, UID и валюта всегда берутся из ответа брокера, а не из зашитого в код справочника.
-    </p>
+    <p class="panel-note">Тикер (VTBR, GAZP) или русское название (Сбербанк, Яндекс) — инструмент разрешается через API. Лот, UID и валюта всегда берутся из ответа брокера, а не из зашитого справочника.</p>
   </section>
 
-  <!-- Правая колонка: параметры ТА и информация о хранилище -->
-  <div style="display: flex; flex-direction: column; gap: 20px;">
-    <!-- Параметры ТА -->
-    <section class="panel ta-panel">
+  <div class="side-column">
+    <section class="panel">
       <div class="panel-head">
-        <div>
-          <div class="eyebrow">МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ</div>
-          <h2>Параметры ТА</h2>
-        </div>
-        <span class="pill neutral">1D / 1H / 1m</span>
+        <div><div class="eyebrow">КОНТРОЛЬ СКАНИРОВАНИЯ</div><h2>Кто работает</h2></div>
+        <a class="pill neutral" href="/reasoning">ПОКРЫТИЕ ↗</a>
       </div>
-      <p class="panel-copy">
-        Индикаторы API (SMA / EMA / RSI / MACD / Bollinger) и локальные индикаторы (ATR / Fibonacci / VWAP / OBV) разделены по таймфреймам.
-      </p>
-      <div class="tf-overview">
-        <div><span>1D</span><strong>Контекст</strong><small>Тренд, SMA/EMA, ATR</small></div>
-        <div><span>1H</span><strong>Сетап</strong><small>RSI, MACD, Bollinger</small></div>
-        <div><span>1m</span><strong>Тайминг</strong><small>VWAP, OBV, стакан</small></div>
+      <div class="mini-table">
+        {% for item in instruments %}
+        <div><span>{{ item.ticker }}</span><strong class="{% if item.benchmark %}muted{% elif item.enabled %}positive{% else %}negative{% endif %}">{% if item.benchmark %}БЕНЧМАРК{% elif item.enabled %}СКАНИРУЕТСЯ{% else %}ОТКЛЮЧЕНА{% endif %}</strong></div>
+        {% else %}
+        <p class="empty-subtle">Корзина пуста — боту некого сканировать.</p>
+        {% endfor %}
       </div>
-      <div class="inline-alert warning">
-        Версионирование параметров ТА подключено к <code>strategy_configs</code> в DuckDB. Риск-настройки и веса конфлюенса редактируются в разделе <a href="/risk">Риск-модуль ↗</a>.
-      </div>
+      <p class="panel-note">Отключённая бумага исключается из цикла решений и подсвечивается на странице «Мысли бота» как ОТКЛЮЧЕНА.</p>
     </section>
-
-    <!-- Информация о хранении настроек и данных ПО -->
-    <section class="panel storage-info-panel">
+    <section class="panel">
       <div class="panel-head">
-        <div>
-          <div class="eyebrow">СТРУКТУРА ХРАНИЛИЩА ПРОЕКТА</div>
-          <h2>📁 Где хранятся настройки и данные</h2>
-        </div>
-        <span class="pill neutral">ДИРЕКТОРИЯ</span>
+        <div><div class="eyebrow">ПРАВИЛА ПРИЁМА</div><h2>Ограничения корзины</h2></div>
       </div>
-      <p class="panel-copy" style="font-size: 11px; margin-bottom: 12px;">
-        Все параметры системы, учётные данные, исторические ряды и операционное состояние хранятся в следующих местах:
-      </p>
-      <div style="display: flex; flex-direction: column; gap: 10px; font-size: 11px;">
-        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
-          <strong style="color: var(--accent);">🔑 Токены и секреты API</strong>
-          <div style="color: var(--muted); margin-top: 3px;">
-            • Системное защищённое хранилище ОС: <code>keyring</code> (сервис <code>red-bot</code>, ключ <code>tbank_api_token</code>).<br>
-            • Конфигурационный файл окружения: <code>.env</code> (переменная <code>REDBOT_TBANK__API_TOKEN</code>, пример в <code>config/.env.example</code>).
-          </div>
-        </div>
-
-        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
-          <strong style="color: var(--accent);">📊 Инструменты, FIGI / UID и корзина</strong>
-          <div style="color: var(--muted); margin-top: 3px;">
-            • Рабочая корзина: база DuckDB <code>data/redbot.duckdb</code>, таблица <code>instruments</code> (поля <code>uid</code>, <code>ticker</code>, <code>class_code</code>, <code>lot_size</code>, <code>currency</code>).<br>
-            • Флаги активности: таблица <code>operational_settings</code> (ключи <code>instrument:&lt;uid&gt;:enabled</code>).<br>
-            • Каталог инструментов: таблица <code>instrument_catalog</code> — кеш справочника <code>InstrumentsService</code> (Shares / Etfs / Currencies / Futures / FindInstrument). Хардкода тикеров и лотов в коде нет: данные загружаются из API и сохраняются здесь.<br>
-            • Дефолты первичного заполнения: <code>config/seed_defaults.py</code>.
-          </div>
-        </div>
-
-        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
-          <strong style="color: var(--accent);">⚙️ Настройки индикаторов и риск-модели</strong>
-          <div style="color: var(--muted); margin-top: 3px;">
-            • База DuckDB: <code>data/redbot.duckdb</code> (таблица <code>strategy_configs</code> — версии конфигураций, веса конфлюенса, риск на сделку, множители целей).<br>
-            • Начальные параметры индикаторов ТА: <code>config/seed_defaults.py</code> (константа <code>DEFAULT_TA_PARAMS</code>).
-          </div>
-        </div>
-
-        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
-          <strong style="color: var(--accent);">💳 Счёт и контур исполнения</strong>
-          <div style="color: var(--muted); margin-top: 3px;">
-            • Режим следующего запуска и отдельные account defaults live/sandbox хранятся в <code>operational_settings</code> DuckDB и меняются на <a href="/settings">странице настроек</a>.<br>
-            • Account ID из ENV — необязательный явный override; открытость счёта проверяется через API.
-          </div>
-        </div>
-
-        <div style="background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; padding: 10px;">
-          <strong style="color: var(--accent);">📦 Рыночные данные и архивы</strong>
-          <div style="color: var(--muted); margin-top: 3px;">
-            • Оперативные свечи и стаканы (Hot-слой): <code>data/redbot.duckdb</code> (таблицы <code>candles</code>, <code>orderbooks</code>, <code>trades</code>, <code>positions</code>).<br>
-            • Паркетный холодный архив (Cold-слой): директория <code>data/archive/</code>.<br>
-            • TLS-сертификат доверия Минцифры РФ: <code>config/certs/russian_trusted_ca.pem</code>.
-          </div>
-        </div>
-      </div>
+      <ul class="rule-list">
+        <li><strong>Только LONG</strong> — шорт исключён доменной моделью.</li>
+        <li><strong>2–5 активных</strong> — концентрация важнее разброса.</li>
+        <li><strong>IMOEX не торгуется</strong> — только сравнение относительной силы.</li>
+        <li><strong>Каталог из API</strong> — делистинг и сплиты не делают интерфейс «тихо неверным».</li>
+      </ul>
     </section>
   </div>
 </div>
@@ -141,17 +68,9 @@
 function selectQuickTicker(ticker, classCode) {
   var input = document.getElementById('instrument-ticker-input');
   var clsInput = document.getElementById('instrument-class-input');
-  if (input) {
-    input.value = ticker;
-    input.focus();
-  }
-  if (clsInput && classCode) {
-    clsInput.value = classCode;
-  }
+  if (input) { input.value = ticker; input.focus(); }
+  if (clsInput && classCode) { clsInput.value = classCode; }
 }
-
-// Значение option в выпадающем каталоге — "ТИКЕР|КЛАСС-КОД":
-// класс-код берём из записи каталога, а не подставляем TQBR всем инструментам.
 function selectCatalogInstrument(value) {
   var parts = String(value).split('|');
   selectQuickTicker(parts[0], parts.length > 1 ? parts[1] : 'TQBR');

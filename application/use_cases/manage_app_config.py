@@ -62,9 +62,7 @@ async def prepare_sandbox_account_creation(
     explicit_account_id: str | None,
 ) -> None:
     """Запоминает pending перед неидемпотентным open, не повторяя неопределённый вызов."""
-    pending = (
-        await repository.get_operational_value(SANDBOX_OPEN_PENDING_KEY)
-    ) == "true"
+    pending = (await repository.get_operational_value(SANDBOX_OPEN_PENDING_KEY)) == "true"
     if pending and not has_open_account:
         raise RuntimeError(
             "Предыдущий запрос создания sandbox-счёта мог завершиться успешно, "

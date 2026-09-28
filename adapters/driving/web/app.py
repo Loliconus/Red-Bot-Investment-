@@ -29,8 +29,10 @@ from adapters.driving.web.routers import (
     db_admin,
     instruments,
     journal,
+    reasoning,
     risk,
     security,
+    strategy,
     system,
     trading,
 )
@@ -41,7 +43,7 @@ from adapters.driving.web.security.session import COOKIE_NAME, websocket_session
 from adapters.driving.web.ws.hub import BroadcastHub, websocket_endpoint
 from adapters.driving.web.ws.replay import router as replay_router
 from application.composition import AppContext
-from application.events import DecisionRecorded
+from application.events import DecisionCycleCompleted, DecisionRecorded
 from application.use_cases.gui_views import decision_view
 from application.use_cases.monitor_gui import channel_snapshot, resources
 from application.use_cases.search_gui import search_gui
@@ -158,8 +160,12 @@ def create_app(
                 },
             )
 
+        async def on_cycle(event: DecisionCycleCompleted) -> None:
+            await app.state.hub.publish("reasoning.scan", "scan.completed", event.report.summary())
+
         context.event_bus.subscribe(DecisionRecorded, on_decision)
         context.event_bus.subscribe(KillSwitchEngaged, on_kill)
+        context.event_bus.subscribe(DecisionCycleCompleted, on_cycle)
 
         async def heartbeat() -> None:
             counter = 0
@@ -187,6 +193,7 @@ def create_app(
                 await beat
             context.event_bus.unsubscribe(DecisionRecorded, on_decision)
             context.event_bus.unsubscribe(KillSwitchEngaged, on_kill)
+            context.event_bus.unsubscribe(DecisionCycleCompleted, on_cycle)
             await app.state.jobs.stop()
             logging.getLogger().removeHandler(app.state.logs)
             await app.state.hub.stop()
@@ -296,6 +303,8 @@ def create_app(
         control.router,
         app_settings.router,
         dashboard.router,
+        reasoning.router,
+        strategy.router,
         instruments.router,
         risk.router,
         chart.router,

@@ -86,6 +86,44 @@ def _dt(value: Any) -> datetime:
     return datetime.fromisoformat(str(value))
 
 
+#: Общий SELECT решений с тикером инструмента из market snapshot.
+_DECISION_SELECT = (
+    "SELECT d.id, d.market_snapshot_id, d.trade_plan_id, d.decision, "
+    "d.confluence_score, d.reasoning, d.risk_check_passed, d.risk_check_reason, "
+    "d.thought_text, d.created_at, m.instrument_uid "
+    "FROM decision_snapshots d LEFT JOIN market_snapshots m ON m.id = d.market_snapshot_id"
+)
+
+
+def _row_to_decision_record(row: Any) -> DecisionRecord:
+    return DecisionRecord(
+        instrument_uid=row[10] or "",
+        snapshot=DecisionSnapshot(
+            id=UUID(row[0]),
+            market_snapshot_id=UUID(row[1]),
+            trade_plan_id=UUID(row[2]) if row[2] else None,
+            decision=DecisionType(row[3]),
+            confluence_score=_dec(row[4]),
+            reasoning_chain=tuple(
+                ReasoningStep(
+                    module=step["module"],
+                    signal=step["signal"],
+                    weight=_dec(step["weight"]),
+                    raw_value=_dec(step["raw_value"])
+                    if step.get("raw_value") is not None
+                    else None,
+                    comment=step.get("comment", ""),
+                )
+                for step in json.loads(row[5])
+            ),
+            risk_check_passed=bool(row[6]),
+            risk_check_reason=row[7],
+            thought_text=row[8],
+            created_at=_dt(row[9]),
+        ),
+    )
+
+
 def _serialize_step(step: ReasoningStep) -> dict[str, Any]:
     """Явная сериализация: у dataclass со ``slots`` нет ``__dict__``."""
     return {
@@ -302,42 +340,17 @@ class DuckDBRepository:
 
     async def list_recent_decisions(self, limit: int = 50) -> list[DecisionRecord]:
         rows = await self._arun(
-            "SELECT d.id, d.market_snapshot_id, d.trade_plan_id, d.decision, "
-            "d.confluence_score, d.reasoning, d.risk_check_passed, d.risk_check_reason, "
-            "d.thought_text, d.created_at, m.instrument_uid "
-            "FROM decision_snapshots d LEFT JOIN market_snapshots m ON m.id = d.market_snapshot_id "
-            "ORDER BY d.created_at DESC LIMIT ?",
+            f"{_DECISION_SELECT} ORDER BY d.created_at DESC LIMIT ?",
             [min(max(limit, 1), 500)],
         )
-        return [
-            DecisionRecord(
-                instrument_uid=row[10] or "",
-                snapshot=DecisionSnapshot(
-                    id=UUID(row[0]),
-                    market_snapshot_id=UUID(row[1]),
-                    trade_plan_id=UUID(row[2]) if row[2] else None,
-                    decision=DecisionType(row[3]),
-                    confluence_score=_dec(row[4]),
-                    reasoning_chain=tuple(
-                        ReasoningStep(
-                            module=step["module"],
-                            signal=step["signal"],
-                            weight=_dec(step["weight"]),
-                            raw_value=_dec(step["raw_value"])
-                            if step.get("raw_value") is not None
-                            else None,
-                            comment=step.get("comment", ""),
-                        )
-                        for step in json.loads(row[5])
-                    ),
-                    risk_check_passed=bool(row[6]),
-                    risk_check_reason=row[7],
-                    thought_text=row[8],
-                    created_at=_dt(row[9]),
-                ),
-            )
-            for row in rows
-        ]
+        return [_row_to_decision_record(row) for row in rows]
+
+    async def list_decisions_since(self, since: datetime) -> list[DecisionRecord]:
+        rows = await self._arun(
+            f"{_DECISION_SELECT} WHERE d.created_at >= ? ORDER BY d.created_at DESC LIMIT 5000",
+            [since],
+        )
+        return [_row_to_decision_record(row) for row in rows]
 
     async def save_decision_snapshots_bulk(self, snapshots: Any) -> None:
         for snapshot in snapshots:

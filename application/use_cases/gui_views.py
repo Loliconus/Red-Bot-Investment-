@@ -34,6 +34,7 @@ def decision_view(record: DecisionRecord, context: AppContext) -> dict[str, Any]
         "thought_text": snapshot.thought_text,
         "created_at": snapshot.created_at.isoformat(),
         "plan_id": str(snapshot.trade_plan_id) if snapshot.trade_plan_id else None,
+        "market_snapshot_id": str(snapshot.market_snapshot_id),
         "reasoning": [
             {
                 "module": step.module,
@@ -315,5 +316,71 @@ async def journal_view(
 
 
 async def decision_detail(context: AppContext, decision_id: UUID) -> dict[str, Any] | None:
+    """Решение + рыночный контекст, по которому оно было принято.
+
+    Без снимка рынка цепочка обоснования — половина картины: оператор обязан
+    видеть те же цифры, что видела стратегия.
+    """
     records = await context.repository.list_recent_decisions(500)
-    return next((decision_view(r, context) for r in records if r.snapshot.id == decision_id), None)
+    record = next((r for r in records if r.snapshot.id == decision_id), None)
+    if record is None:
+        return None
+    detail = decision_view(record, context)
+
+    market = await context.repository.get_market_snapshot(record.snapshot.market_snapshot_id)
+    if market is None:
+        detail["market"] = None
+        return detail
+    detail["market"] = {
+        "captured_at": market.captured_at.isoformat(),
+        "regime": {tf.value: r.value for tf, r in market.market_regime.items()},
+        "signals": {tf.value: dict(signals) for tf, signals in market.signals.items()},
+        "indicators": {
+            tf.value: {name: str(value) for name, value in vals.items()}
+            for tf, vals in market.indicators.items()
+        },
+        "ohlcv": {
+            tf.value: {
+                "open": str(bar.open),
+                "high": str(bar.high),
+                "low": str(bar.low),
+                "close": str(bar.close),
+                "volume": bar.volume,
+            }
+            for tf, bar in market.ohlcv.items()
+        },
+        "orderbook": _orderbook_view(market),
+    }
+    plan = (
+        await context.repository.get_trade_plan(record.snapshot.trade_plan_id)
+        if record.snapshot.trade_plan_id
+        else None
+    )
+    detail["plan"] = (
+        {
+            "id": str(plan.id),
+            "status": plan.status.value,
+            "entry": str(plan.entry_price),
+            "stop": str(plan.hard_stop_price),
+            "target": str(plan.target_price),
+            "lots": plan.quantity_lots,
+            "rejection_reason": plan.rejection_reason or "",
+        }
+        if plan is not None
+        else None
+    )
+    return detail
+
+
+def _orderbook_view(market: Any) -> dict[str, Any] | None:
+    book = getattr(market, "orderbook", None)
+    if book is None:
+        return None
+    return {
+        "bids": [
+            {"price": str(level.price), "quantity": level.quantity} for level in book.bids[:5]
+        ],
+        "asks": [
+            {"price": str(level.price), "quantity": level.quantity} for level in book.asks[:5]
+        ],
+    }

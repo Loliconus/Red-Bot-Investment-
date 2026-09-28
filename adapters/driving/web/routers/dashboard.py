@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from adapters.driving.web.dependencies import ContextDep, require_session
 from adapters.driving.web.render import render_page, render_partial
+from application.use_cases.gui_control import get_control_state
 from application.use_cases.gui_views import dashboard_view, decision_detail
 
 router = APIRouter(tags=["dashboard"], dependencies=[Depends(require_session)])
@@ -28,9 +29,12 @@ async def page(request: Request, context: ContextDep, period: str = "session") -
     return render_page(
         request,
         "pages/dashboard.html",
-        title="Дашборд",
+        title="Обзор",
         section="dashboard",
-        data={"dashboard": await dashboard_view(context, period=period)},
+        data={
+            "dashboard": await dashboard_view(context, period=period),
+            "state": get_control_state(context),
+        },
     )
 
 

@@ -24,9 +24,9 @@ class _FakeAsyncSandboxClient:
         self.closed = True
 
 
-async def test_sandbox_channel_uses_supported_sdk_constructor(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
-
+async def test_sandbox_channel_uses_supported_sdk_constructor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def client_factory() -> type[_FakeAsyncSandboxClient]:
         return _FakeAsyncSandboxClient
 

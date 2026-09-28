@@ -1,5 +1,26 @@
-<div class="wizard"><div class="wizard-title"><strong>Смена счёта</strong><small>Трёхэтапное подтверждение · каждый шаг в аудите</small></div>{% if error %}<div class="inline-alert danger" role="alert">{{ error }}</div>{% endif %}
-{% if step|default(1) == 1 %}<p>1. Проверьте текущий счёт: <strong>{{ masked|default(risk.masked_account_id if risk is defined else 'скрыт') }}</strong>. Смена разрешена только при полностью остановленном боте.</p><form hx-post="/risk/account/step/1" hx-target="#account-wizard"><button type="submit" class="button secondary">Начать процедуру →</button></form>
-{% elif step == 2 %}<p>2. Текущий: <strong>{{ masked }}</strong>. Введите идентификатор нового счёта.</p><form hx-post="/risk/account/step/2" hx-target="#account-wizard" class="wizard-form"><input name="new_account_id" autocomplete="off" placeholder="Новый managed_account_id" required minlength="4" maxlength="64"><button class="button primary" type="submit">Продолжить →</button></form>
-{% elif step == 3 %}<p>3. Новый счёт: <strong>{{ candidate|default('скрыт') }}</strong>. Настройка вступит в силу <strong>после полного рестарта</strong> и не сменит брокера в запущенном процессе.</p><form hx-post="/risk/account/step/3" hx-target="#account-wizard" class="wizard-form"><label>Введите фразу <strong>СМЕНИТЬ СЧЁТ</strong><input name="confirmation" autocomplete="off" required placeholder="СМЕНИТЬ СЧЁТ"></label><button type="submit" class="button danger">Подтвердить смену счёта</button></form>
-{% else %}<div class="inline-alert success">Счёт {{ candidate }} сохранён для следующего запуска. Перезапустите всё приложение перед торговлей.</div>{% endif %}</div>
+<div class="wizard">
+  <div class="wizard-title"><strong>Смена счёта</strong><small>Трёхэтапное подтверждение · каждый шаг в аудите</small></div>
+  {% if error %}<div class="inline-alert danger" role="alert">{{ error }}</div>{% endif %}
+  {% if step|default(1) == 1 %}
+  <p>1. Проверьте текущий счёт: <strong>{{ masked|default(risk.masked_account_id if risk is defined else 'скрыт') }}</strong>. Смена разрешена только при полностью остановленном боте.</p>
+  <form hx-post="/risk/account/step/1" hx-target="#account-wizard">
+    <button type="submit" class="button secondary">Начать процедуру →</button>
+  </form>
+  {% elif step == 2 %}
+  <p>2. Текущий: <strong>{{ masked }}</strong>. Введите идентификатор нового счёта.</p>
+  <form hx-post="/risk/account/step/2" hx-target="#account-wizard" class="wizard-form">
+    <input name="new_account_id" autocomplete="off" placeholder="Новый managed_account_id" required minlength="4" maxlength="64">
+    <button class="button primary" type="submit">Продолжить →</button>
+  </form>
+  {% elif step == 3 %}
+  <p>3. Новый счёт: <strong>{{ candidate|default('скрыт') }}</strong>. Настройка вступит в силу <strong>после полного рестарта</strong> и не сменит брокера в запущенном процессе.</p>
+  <form hx-post="/risk/account/step/3" hx-target="#account-wizard" class="wizard-form">
+    <label>Введите фразу <strong>СМЕНИТЬ СЧЁТ</strong>
+      <input name="confirmation" autocomplete="off" required placeholder="СМЕНИТЬ СЧЁТ">
+    </label>
+    <button type="submit" class="button danger">Подтвердить смену счёта</button>
+  </form>
+  {% else %}
+  <div class="inline-alert success">Счёт {{ candidate }} сохранён для следующего запуска. Перезапустите всё приложение перед торговлей.</div>
+  {% endif %}
+</div>

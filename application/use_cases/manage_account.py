@@ -95,7 +95,7 @@ async def create_sandbox_account(context: AppContext, name: str = "Red-Bot Sandb
     open_account = getattr(context.broker, "open_sandbox_account", None)
     if open_account is None:
         raise RuntimeError("Текущий адаптер не поддерживает SandboxService")
-    new_id = await open_account(name=name)
+    new_id: str = await open_account(name=name)
     await switch_sandbox_account(context, new_id)
     logger.info("sandbox_account_created_and_activated")
     return new_id
@@ -148,11 +148,7 @@ async def close_sandbox_account(context: AppContext, account_id: str) -> None:
         if hasattr(context.broker, "get_sandbox_accounts"):
             accounts = await context.broker.get_sandbox_accounts()
         other = next(
-            (
-                a["id"]
-                for a in accounts
-                if a["id"] != account_id and int(a.get("status", 0)) == 2
-            ),
+            (a["id"] for a in accounts if a["id"] != account_id and int(a.get("status", 0)) == 2),
             None,
         )
         if other:
@@ -164,6 +160,7 @@ async def close_sandbox_account(context: AppContext, account_id: str) -> None:
 
 async def refresh_portfolio(context: AppContext) -> PortfolioState:
     """Запрашивает баланс API; sandbox не подменяется устаревшим или фиктивным."""
+    portfolio: PortfolioState | None
     if context.execution_mode is ExecutionMode.SANDBOX:
         get_portfolio = getattr(context.broker, "get_portfolio", None)
         if get_portfolio is None:

@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from adapters.driven.tbank.market_data_adapter import _parse_tech_analysis
 from adapters.driven.tbank.mappers import (
     TIMEFRAME_TO_API_INTERVAL,
     TIMEFRAME_TO_INDICATOR_INTERVAL,
@@ -25,6 +24,7 @@ from adapters.driven.tbank.mappers import (
     quotation_to_decimal,
     units_to_lots,
 )
+from adapters.driven.tbank.market_data_adapter import _parse_tech_analysis
 from adapters.driven.tbank.retry import (
     RetryExhaustedError,
     RetryPolicy,

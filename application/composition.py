@@ -31,6 +31,7 @@ from application.use_cases.manage_app_config import (
     save_default_mode,
     save_preferred_account_id,
 )
+from application.use_cases.run_decision_cycle import DecisionCycleReport
 from application.use_cases.select_account import (
     OPEN_ACCOUNT_STATUS,
     AccountSelector,
@@ -85,6 +86,7 @@ class AppContext:
     hard_stop_latched: bool = False
     broker_latency_ms: int | None = None
     storage_memory_limit_mb: int | None = None
+    decision_scan_report: DecisionCycleReport | None = None
 
     @property
     def execution_mode(self) -> ExecutionMode:
@@ -220,7 +222,7 @@ async def build_context(
         mode = await load_default_mode(repository, settings.execution_mode)
     if mode is ExecutionMode.LIVE:
         token = settings.tbank.api_token.get_secret_value().strip()
-        if not token or token == "changeme":
+        if not token or token == "changeme":  # noqa: S105 — заводской placeholder, не секрет
             await repository.aclose()
             raise ValueError("api_token не заполнен — боевой режим невозможен")
     if remember_mode:
@@ -312,7 +314,9 @@ async def build_context(
     initial_portfolio: PortfolioState | None = None
     if mode is ExecutionMode.SANDBOX:
         try:
-            get_portfolio = getattr(broker, "get_portfolio")
+            get_portfolio = getattr(broker, "get_portfolio", None)
+            if get_portfolio is None:
+                raise RuntimeError("Sandbox адаптер не реализует GetPortfolio")
             initial_portfolio = await get_portfolio()
             if initial_portfolio is None:
                 raise RuntimeError("Sandbox API не вернул портфель выбранного счета")

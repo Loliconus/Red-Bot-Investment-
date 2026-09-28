@@ -280,19 +280,33 @@ class InMemoryRepository:
         for snapshot in snapshots:
             await self.save_decision_snapshot(snapshot)
 
+    def _decision_record(self, item: DecisionSnapshot) -> DecisionRecord:
+        return DecisionRecord(
+            instrument_uid=self.market_snapshots[item.market_snapshot_id].instrument_uid
+            if item.market_snapshot_id in self.market_snapshots
+            else "",
+            snapshot=item,
+        )
+
     async def list_recent_decisions(self, limit: int = 50) -> list[DecisionRecord]:
         return [
-            DecisionRecord(
-                instrument_uid=self.market_snapshots[item.market_snapshot_id].instrument_uid
-                if item.market_snapshot_id in self.market_snapshots
-                else "",
-                snapshot=item,
-            )
+            self._decision_record(item)
             for item in sorted(
                 self.decision_snapshots.values(),
                 key=lambda decision: decision.created_at,
                 reverse=True,
             )[:limit]
+        ]
+
+    async def list_decisions_since(self, since: datetime) -> list[DecisionRecord]:
+        return [
+            self._decision_record(item)
+            for item in sorted(
+                self.decision_snapshots.values(),
+                key=lambda decision: decision.created_at,
+                reverse=True,
+            )
+            if item.created_at >= since
         ]
 
     async def save_trade_plan(self, plan: TradePlan) -> None:

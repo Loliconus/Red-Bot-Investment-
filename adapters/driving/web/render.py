@@ -30,7 +30,7 @@ def render_page(
     token = request.cookies.get(COOKIE_NAME, "")
     session = manager.get(token)
     chart_uid = next((i.uid for i in context.instruments if not i.is_benchmark), "")
-    navigation = [
+    resolved = [
         {
             "key": item.key,
             "label": item.label,
@@ -38,10 +38,16 @@ def render_page(
             if item.key == "chart" and chart_uid
             else (item.path if item.key != "chart" else "/instruments"),
             "icon": item.icon,
-            "priority": item.priority,
+            "group": item.group,
+            "hint": item.hint,
         }
         for item in NAVIGATION
     ]
+    navigation: list[dict[str, Any]] = []
+    for item in resolved:
+        if not navigation or navigation[-1]["group"] != item["group"]:
+            navigation.append({"group": item["group"], "items": []})
+        navigation[-1]["items"].append(item)
     variables: dict[str, Any] = {
         "request": request,
         "title": title,

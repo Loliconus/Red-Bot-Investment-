@@ -131,7 +131,7 @@ def test_settings_store_next_mode_and_open_account_without_switching_runtime(
 
     page = client.get("/settings")
     assert page.status_code == 200
-    assert "Настройки запуска" in page.text
+    assert "Счёт и режим" in page.text
     assert "Автоматически" in page.text
 
     response = client.post(
@@ -302,8 +302,8 @@ def test_ws_replay_delivers_ordered_deltas_and_reports_gaps(client: TestClient) 
 
 
 def test_csv_export_isolation_between_sessions(
-    db_fixture: AppContext,
-) -> None:  # noqa: F811 — pytest fixture
+    db_fixture: AppContext,  # noqa: F811 — имя совпадает с pytest fixture
+) -> None:
     with TestClient(create_app(db_fixture)) as a, TestClient(create_app(db_fixture)) as b:
         # Экспорт хранится в сессии GUI, не в URL с доступом для любого оператора.
         token_a, csrf = login(a)

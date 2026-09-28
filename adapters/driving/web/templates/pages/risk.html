@@ -2,104 +2,41 @@
 {% block content %}
 <section class="page-heading">
   <div>
-    <div class="eyebrow">05 / КОНТРОЛЬ КАПИТАЛА <span class="eyebrow-line"></span> ПРИОРИТЕТ P0</div>
-    <h1>Риск-модуль и управление счётом</h1>
-    <p>Параметры безопасности капитала и администрирование счёта. В режиме песочницы доступно быстрое управление виртуальными балансами.</p>
+    <div class="eyebrow">№ 06 · КОНТРОЛЬ КАПИТАЛА <span class="eyebrow-line"></span> ПРИОРИТЕТ P0</div>
+    <h1>Риск-модуль</h1>
+    <p>Параметры безопасности капитала. Управление счётом и режимом исполнения — на странице «Счёт и режим».</p>
   </div>
   <span class="heading-meta">CONFIG v{{ risk.config_version }}</span>
 </section>
 
 <div class="two-column risk-upper">
-  <!-- Панель счёта -->
-  <section class="panel account-panel">
-    <div class="panel-head">
-      <div>
-        <div class="eyebrow">УПРАВЛЯЕМЫЙ СЧЁТ</div>
-        <h2>Торговый счёт</h2>
-      </div>
-      <span class="pill {{ 'warning' if account.is_sandbox else 'danger' }}">
-        {{ 'ПЕСОЧНИЦА' if account.is_sandbox else ('LIVE' if account.is_live else 'BACKTEST') }}
-      </span>
-    </div>
-
-    {% if account.is_sandbox %}
-      <!-- Полнофункциональное администрирование счетов в песочнице -->
-      <div id="sandbox-account-container" style="padding: 16px 20px;">
-        {% include 'partials/sandbox_account.html' %}
-      </div>
-
-      <div style="padding: 0 20px 16px;">
-        <details style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
-          <summary style="font-size: 11px; color: var(--muted); cursor: pointer; user-select: none;">
-            ⚙ Ручной ввод managed_account_id (staged смена счёта для Live/CI)
-          </summary>
-          <div id="account-wizard" style="margin-top: 10px;">
-            {% include 'partials/account_wizard.html' %}
-          </div>
-        </details>
-      </div>
-    {% else %}
-      <!-- Стандартный Live режим со скрытием и паролем -->
-      <div class="account-display">
-        <div>
-          <small>MANAGED ACCOUNT ID</small>
-          <div class="account-number" id="account-value">{{ risk.masked_account_id }}</div>
-        </div>
-        <span class="account-lock">◈</span>
-      </div>
-      <form hx-post="/risk/account/reveal" hx-target="#account-value" class="account-reveal">
-        <label>
-          Показать полный ID <span>только после повторного ввода пароля GUI</span>
-          <input type="password" name="password" autocomplete="current-password" placeholder="Пароль сессии" required>
-        </label>
-        <button type="submit" class="button secondary">Показать</button>
-      </form>
-      <div class="separator"></div>
-      <div id="account-wizard">
-        {% include 'partials/account_wizard.html' %}
-      </div>
-    {% endif %}
-  </section>
-
-  <!-- Бюджет потерь -->
   <section class="panel risk-budget">
     <div class="panel-head">
-      <div>
-        <div class="eyebrow">РИСК / СДЕЛКА</div>
-        <h2>Бюджет потерь</h2>
-      </div>
+      <div><div class="eyebrow">РИСК / СДЕЛКА</div><h2>Бюджет потерь</h2></div>
       <span class="pill neutral">{{ mode }}</span>
     </div>
     <div class="budget-value">
-      {% if risk.max_loss_rub is not none %}
-        {{ '{:,.0f}'.format(risk.max_loss_rub)|replace(',', ' ') }} ₽
-      {% else %}
-        — ₽
-      {% endif %}
+      {% if risk.max_loss_rub is not none %}{{ '{:,.0f}'.format(risk.max_loss_rub)|replace(',', ' ') }} ₽{% else %}— ₽{% endif %}
     </div>
-    <div class="budget-sub">
-      максимальный убыток по текущему балансу при риске {{ risk.risk_per_trade_pct * 100 }}% на сделку
-    </div>
-    <div class="budget-gauge">
-      <div style="width: {{ (risk.risk_per_trade_pct * 2000)|int }}%"></div>
-    </div>
+    <div class="budget-sub">максимальный убыток по текущему балансу при риске {{ risk.risk_per_trade_pct * 100 }}% на сделку</div>
+    <div class="budget-gauge"><div style="width: {{ (risk.risk_per_trade_pct * 2000)|int }}%"></div></div>
     <div class="budget-breakdown">
-      <div>
-        <small>БАЛАНС</small>
-        <strong>{{ '{:,.0f}'.format(risk.balance_rub)|replace(',', ' ') ~ ' ₽' if risk.balance_rub is not none else 'н/д' }}</strong>
-      </div>
-      <div>
-        <small>ПОРОГ / СДЕЛКА</small>
-        <strong>{{ risk.risk_per_trade_pct * 100 }}%</strong>
-      </div>
-      <div>
-        <small>МИН. ЦЕЛЬ*</small>
-        <strong>{{ '%.2f'|format(risk.required_target_pct) }}%</strong>
-      </div>
+      <div><small>БАЛАНС</small><strong>{{ '{:,.0f}'.format(risk.balance_rub)|replace(',', ' ') ~ ' ₽' if risk.balance_rub is not none else 'н/д' }}</strong></div>
+      <div><small>ПОРОГ / СДЕЛКА</small><strong>{{ risk.risk_per_trade_pct * 100 }}%</strong></div>
+      <div><small>МИН. ЦЕЛЬ*</small><strong>{{ '%.2f'|format(risk.required_target_pct) }}%</strong></div>
     </div>
-    <p class="panel-note">
-      *Оценка при нулевом спреде. Перед сделкой реальные издержки пересчитываются в core/risk.
-    </p>
+    <p class="panel-note">*Оценка при нулевом спреде. Перед сделкой реальные издержки пересчитываются в core/risk.</p>
+  </section>
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">СЧЁТ И РЕЖИМ</div><h2>Где исполняемся</h2></div>
+      <a class="pill neutral" href="/settings">ПЕРЕЙТИ ↗</a>
+    </div>
+    <dl class="detail-list">
+      <div><dt>Управляемый счёт</dt><dd class="mono">{{ risk.masked_account_id }}</dd></div>
+      <div><dt>Режим</dt><dd>{{ mode }}</dd></div>
+    </dl>
+    <p class="panel-note">Песочница: выбор счёта и балансы. Live: staged-смена и визард завода токена — в разделе «Счёт и режим».</p>
   </section>
 </div>
 
@@ -112,7 +49,7 @@
     <div class="guard-icon">◆</div>
     <div class="eyebrow">01 / ОБЯЗАТЕЛЬНО</div>
     <h3>Hard Stop</h3>
-    <p>Защита капитала срабатывает до любого другого условия. Механизм нельзя выключить из GUI.</p>
+    <p>Защита капитала срабатывает до любого другого условия. Механизм нельзя выключить из GUI — латч до рестарта.</p>
     <span class="guard-foot">● ВСЕГДА АКТИВЕН</span>
   </div>
   <div class="panel guard invalidation">

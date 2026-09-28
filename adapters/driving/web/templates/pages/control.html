@@ -1,10 +1,64 @@
 {% extends 'base.html' %}
 {% block content %}
-<section class="page-heading"><div><div class="eyebrow">01 / ОПЕРАЦИОННЫЙ КОНТУР <span class="eyebrow-line"></span> ПРИОРИТЕТ P0</div><h1>Пульт управления</h1><p>Жизненный цикл бота, задачи планировщика и экстренные действия — в одном месте.</p></div><span class="heading-meta">ПРОЦЕСС / {{ mode }}</span></section>
+<section class="page-heading">
+  <div>
+    <div class="eyebrow">№ 09 · ОПЕРАЦИОННЫЙ КОНТУР <span class="eyebrow-line"></span> ПРИОРИТЕТ P0</div>
+    <h1>Пульт управления</h1>
+    <p>Жизненный цикл бота, задачи планировщика и экстренные действия — в одном месте.</p>
+  </div>
+  <span class="heading-meta">ПРОЦЕСС / {{ mode }}</span>
+</section>
+
 <div id="control-state">{% include 'partials/control_state.html' %}</div>
+
+<section class="emergency-panel emergency-link-panel">
+  <div class="emergency-icon">■</div>
+  <div class="emergency-info">
+    <div class="eyebrow">АВАРИЙНОЕ УПРАВЛЕНИЕ</div>
+    <h2>Kill-switch</h2>
+    <p>Полная остановка с типированной фразой и задержкой 3 секунды — на странице безопасности.</p>
+  </div>
+  <a class="button danger emergency-button" href="/security">■ ОСТАНОВИТЬ БОТА ↗</a>
+</section>
+
 <div class="two-column control-lower">
-  <section class="panel"><div class="panel-head"><div><div class="eyebrow">СОЕДИНЕНИЯ</div><h2>Внешний контур</h2></div><span class="pill neutral">ДИАГНОСТИКА</span></div><div class="connection-row"><span class="connection-glyph">⇄</span><div><strong>Источник рыночных данных</strong><small>gRPC-поток / данные о подписках не поступали</small></div><span class="connection-value">{{ state.market_adapter }}</span></div><div class="connection-row"><span class="connection-glyph">↗</span><div><strong>Исполнение ордеров</strong><small>Фактически связанный OrderExecutionPort</small></div><span class="connection-value broker-name">{{ state.broker_adapter }}</span></div><p class="panel-note">Состояние подписок и счётчик реконнектов отображаются только при наличии данных адаптера; отсутствие данных не трактуется как здоровое соединение.</p></section>
-  <section class="panel"><div class="panel-head"><div><div class="eyebrow">BOOTSTRAP / SECRET BOUNDARY</div><h2>Техническая конфигурация</h2></div><a class="pill neutral" href="/settings">НАСТРОЙКИ ↗</a></div><dl class="detail-list"><div><dt>Контур</dt><dd>{{ state.bootstrap.env|upper }}</dd></div><div><dt>Источник токена</dt><dd>{{ state.bootstrap.token_source }}</dd></div><div><dt>Проверка TLS</dt><dd>{{ state.bootstrap.tls }}</dd></div><div><dt>Память DuckDB</dt><dd>{{ state.bootstrap.memory_limit_mb }} MB</dd></div><div><dt>Потоки DuckDB</dt><dd>{{ state.bootstrap.threads }}</dd></div></dl><p class="panel-note">{{ state.bootstrap.config_hint }}</p></section>
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">СОЕДИНЕНИЯ</div><h2>Внешний контур</h2></div>
+      <span class="pill neutral">ДИАГНОСТИКА</span>
+    </div>
+    <div class="connection-row"><span class="connection-glyph">⇄</span><div><strong>Источник рыночных данных</strong><small>gRPC-поток / данные о подписках не поступали</small></div><span class="connection-value">{{ state.market_adapter }}</span></div>
+    <div class="connection-row"><span class="connection-glyph">↗</span><div><strong>Исполнение ордеров</strong><small>Фактически связанный OrderExecutionPort</small></div><span class="connection-value broker-name">{{ state.broker_adapter }}</span></div>
+    <p class="panel-note">Состояние подписок и счётчик реконнектов отображаются только при наличии данных адаптера; отсутствие данных не трактуется как здоровое соединение.</p>
+  </section>
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">BOOTSTRAP / SECRET BOUNDARY</div><h2>Техническая конфигурация</h2></div>
+      <a class="pill neutral" href="/settings">СЧЁТ И РЕЖИМ ↗</a>
+    </div>
+    <dl class="detail-list">
+      <div><dt>Контур</dt><dd>{{ state.bootstrap.env|upper }}</dd></div>
+      <div><dt>Источник токена</dt><dd>{{ state.bootstrap.token_source }}</dd></div>
+      <div><dt>Проверка TLS</dt><dd>{{ state.bootstrap.tls }}</dd></div>
+      <div><dt>Память DuckDB</dt><dd>{{ state.bootstrap.memory_limit_mb }} MB</dd></div>
+      <div><dt>Потоки DuckDB</dt><dd>{{ state.bootstrap.threads }}</dd></div>
+    </dl>
+    <p class="panel-note">{{ state.bootstrap.config_hint }}</p>
+  </section>
 </div>
-<section class="panel log-panel" x-data="{level: '', search: '', following: true}"><div class="panel-head"><div><div class="eyebrow">ПОТОКОВЫЕ СОБЫТИЯ</div><h2>Живой лог <span class="live-dot"></span></h2></div><div class="log-tools"><select x-model="level" aria-label="Уровень лога"><option value="">Все уровни</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select><input type="search" x-model="search" placeholder="Фильтр текста / модуля" aria-label="Поиск по логу"><a class="button secondary small" href="/control/logs/export">Экспорт ↗</a></div></div><div class="log-window" id="live-log" data-follow="true" x-on:scroll="following = $el.scrollTop + $el.clientHeight >= $el.scrollHeight - 40; $el.dataset.follow = following"><div class="log-empty" id="log-empty">Лог подключится после установки WebSocket-соединения.</div></div><div class="panel-footnote">Записи очищены от известных секретов до отправки в GUI. Прокрутка вверх приостанавливает автоскролл.</div></section>
+
+<section class="panel log-panel" x-data="{level: '', search: '', following: true}">
+  <div class="panel-head">
+    <div><div class="eyebrow">ПОТОКОВЫЕ СОБЫТИЯ</div><h2>Живой лог <span class="live-dot"></span></h2></div>
+    <div class="log-tools">
+      <select x-model="level" aria-label="Уровень лога"><option value="">Все уровни</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select>
+      <input type="search" x-model="search" placeholder="Фильтр текста / модуля" aria-label="Поиск по логу">
+      <a class="button secondary small" href="/control/logs/export">Экспорт ↗</a>
+    </div>
+  </div>
+  <div class="log-window" id="live-log" data-follow="true" x-on:scroll="following = $el.scrollTop + $el.clientHeight >= $el.scrollHeight - 40; $el.dataset.follow = following">
+    <div class="log-empty" id="log-empty">Лог подключится после установки WebSocket-соединения.</div>
+  </div>
+  <div class="panel-footnote">Записи очищены от известных секретов до отправки в GUI. Прокрутка вверх приостанавливает автоскролл.</div>
+</section>
 {% endblock %}
