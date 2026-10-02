@@ -64,3 +64,7 @@ logs/
 .vscode/
 *.swp
 .DS_Store
+
+# Optional experiment tracking (artifacts stay under data/research by default)
+mlruns/
+mlartifacts/

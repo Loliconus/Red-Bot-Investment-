@@ -42,7 +42,7 @@ from adapters.driving.web.security.log_stream import GuiLogHandler
 from adapters.driving.web.security.session import COOKIE_NAME, websocket_session
 from adapters.driving.web.ws.hub import BroadcastHub, websocket_endpoint
 from adapters.driving.web.ws.replay import router as replay_router
-from application.composition import AppContext
+from application.composition import AppContext, build_research_service
 from application.events import DecisionCycleCompleted, DecisionRecorded
 from application.use_cases.gui_views import decision_view
 from application.use_cases.monitor_gui import channel_snapshot, resources
@@ -70,6 +70,7 @@ def create_app(
     *,
     session_secret: str | None = None,
     hub: BroadcastHub | None = None,
+    research_only: bool = False,
 ) -> FastAPI:
     """Собирает GUI поверх готового контекста приложения (без импорта driven)."""
     secret = session_secret or context.settings.web.session_secret.get_secret_value()
@@ -79,6 +80,7 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.context = context
+        context.research = context.research or build_research_service(context.settings)
         app.state.sessions = SessionManager(secret)
 
         async def snapshot(channel: str) -> dict[str, Any] | list[Any]:
@@ -195,6 +197,8 @@ def create_app(
             context.event_bus.unsubscribe(KillSwitchEngaged, on_kill)
             context.event_bus.unsubscribe(DecisionCycleCompleted, on_cycle)
             await app.state.jobs.stop()
+            if context.research is not None:
+                await context.research.aclose()
             logging.getLogger().removeHandler(app.state.logs)
             await app.state.hub.stop()
             logger.info("web_app_stopped")
@@ -225,7 +229,9 @@ def create_app(
     @app.get("/login")
     async def login_page(request: Request) -> Any:
         if request.app.state.sessions.verify(request.cookies.get(COOKIE_NAME, "")):
-            return RedirectResponse(url="/control", status_code=303)
+            return RedirectResponse(
+                url="/backtest" if research_only else "/control", status_code=303
+            )
         return render_page(request, "pages/login.html", title="Вход", section="login")
 
     def _check_login(request: Request, password: str) -> tuple[str, Any]:
@@ -259,7 +265,9 @@ def create_app(
                 data={"error": "Неверный пароль или слишком много попыток"},
                 status_code=401,
             )
-        response = RedirectResponse(url="/control", status_code=303)
+        response = RedirectResponse(
+            url="/backtest" if research_only else "/control", status_code=303
+        )
         _cookie(response, request, token)
         return response
 

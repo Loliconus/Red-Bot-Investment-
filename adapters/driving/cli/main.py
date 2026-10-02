@@ -18,6 +18,7 @@ from typing import Any
 import structlog
 import typer
 
+from adapters.driving.cli.research import research_cli
 from config.enums import ExecutionMode
 from config.logging_config import configure_logging
 from config.settings import load_settings
@@ -29,6 +30,7 @@ secrets_app = typer.Typer(help="Работа с секретами")
 db_app = typer.Typer(help="Работа с хранилищем")
 app_cli.add_typer(secrets_app, name="secrets")
 app_cli.add_typer(db_app, name="db")
+app_cli.add_typer(research_cli, name="research")
 
 
 @secrets_app.command("set-token")

@@ -1,31 +1,91 @@
 {% extends 'base.html' %}
+{% block head %}
+<link rel="stylesheet" href="/static/css/research.css">
+<script defer src="/static/js/research.js"></script>
+{% endblock %}
 {% block content %}
-<section class="page-heading">
-  <div>
-    <div class="eyebrow">№ 11 · ИСТОРИЧЕСКАЯ ПРОВЕРКА <span class="eyebrow-line"></span> ПРИОРИТЕТ P2</div>
-    <h1>Бэктест</h1>
-    <p>Отдельный контур проверки гипотез без риска для торгового процесса.</p>
-  </div>
-  <span class="heading-meta">ИЗОЛИРОВАНО ОТ LIVE</span>
-</section>
+<div class="research-app" id="research-app">
+  <header class="lab-heading">
+    <div><div class="lab-eyebrow"><span class="lab-live-dot"></span> MOEX / RESEARCH LAB <span class="lab-version">BASELINE 01</span></div>
+      <h1>Синтетический трейдер<span class="lab-heading-period">.</span></h1>
+      <p>Не прогноз цены. Вероятностная оценка режима — с презумпцией шума.</p></div>
+    <div class="lab-heading-actions"><span class="lab-safety">⌁ REAL ORDERS OFF</span><button class="lab-button primary" id="new-experiment" type="button">+ Новый эксперимент</button></div>
+  </header>
 
-<section class="panel backtest-panel">
-  <div class="panel-head">
-    <div><div class="eyebrow">ПАРАМЕТРЫ ПРОГОНА</div><h2>Новый прогон</h2></div>
-    <span class="pill warning">НЕ ПОДКЛЮЧЕН</span>
-  </div>
-  <div class="two-column">
-    <div class="compact-form">
-      <div class="form-row"><label>Начало<input type="date" disabled></label><label>Конец<input type="date" disabled></label></div>
-      <label>Режим<select disabled><option>Простой</option><option>Walk-forward</option></select></label>
-      <label>In-sample, %<input type="range" min="30" max="90" value="60" disabled></label>
+  <nav class="lab-tabs" aria-label="Исследование">
+    <button type="button" class="active" data-tab="overview" aria-selected="true">Режим и капитал</button>
+    <button type="button" data-tab="validation" aria-selected="false">Валидация <span id="gate-count">—</span></button>
+    <button type="button" data-tab="experiments" aria-selected="false">Эксперименты <span id="run-count">0</span></button>
+    <span class="lab-tab-meta" id="run-meta">Нет выбранного прогона</span>
+  </nav>
+  <div id="lab-error" class="lab-notice danger" role="alert" hidden></div>
+  <section id="run-progress" class="lab-progress-panel" aria-live="polite" hidden>
+    <div><span class="lab-spinner" id="progress-spinner"></span><strong id="progress-stage">Подготовка</strong><span id="progress-percent">0%</span></div>
+    <div class="lab-progress-track"><i id="progress-bar"></i></div><p id="progress-detail"></p>
+    <button class="lab-button ghost" id="cancel-run" type="button">Остановить worker</button>
+  </section>
+
+  <div class="lab-pane" data-pane="overview">
+    <div class="lab-context-row"><div class="lab-chips"><span class="lab-chip source" id="source-chip">НЕТ ДАННЫХ</span><span class="lab-chip">CatBoost · 3 головы</span><span class="lab-chip" id="timeframe-chip">Закрытые бары</span><span class="lab-chip" id="frozen-chip">Final OOS закрыт</span></div>
+      <label class="lab-asset-picker">Инструмент <select id="asset-select" aria-label="Инструмент"><option>—</option></select></label></div>
+    <p class="lab-asof" id="asof-note">Вероятности появятся после реального расчёта. Здесь не отображаются выдуманные сигналы.</p>
+    <section class="lab-probabilities" aria-label="Три вероятности">
+      <article class="lab-prob-card trend"><div class="lab-card-top"><span class="lab-math">P(trend)</span><span class="lab-number-label">01 / РЕЖИМ</span></div><div class="lab-prob-value" id="p-trend">—</div><div class="lab-meter"><i id="p-trend-meter"></i></div><h3>Направленное движение</h3><p>Касание ATR-барьера до таймаута, а не обещание продолжения тренда.</p><footer><span>Порог входа</span><strong id="trend-threshold">&ge; {{ defaults.risk.trend_threshold }}</strong></footer></article>
+      <article class="lab-prob-card direction"><div class="lab-card-top"><span class="lab-math">P(up | trend)</span><span class="lab-number-label">02 / НАПРАВЛЕНИЕ</span></div><div class="lab-prob-value" id="p-up">—</div><div class="lab-meter"><i id="p-up-meter"></i></div><h3>Вверх, если есть тренд</h3><p>Условная вероятность. Низкое значение означает отказ от LONG, не SHORT.</p><footer><span>Только trend-события</span><strong id="direction-text">—</strong></footer></article>
+      <article class="lab-prob-card reversal"><div class="lab-card-top"><span class="lab-math">P(break within H)</span><span class="lab-number-label">03 / РИСК СЛОМА</span></div><div class="lab-prob-value" id="p-break">—</div><div class="lab-meter"><i id="p-break-meter"></i></div><h3>Риск против текущего bias</h3><p>Противоположный ATR-барьер в полном горизонте H. Снижает размер позиции.</p><footer><span>Горизонт</span><strong id="horizon-text">{{ defaults.horizon }} баров</strong></footer></article>
+    </section>
+
+    <div class="lab-main-grid">
+      <section class="lab-panel lab-equity-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">OUT-OF-SAMPLE / NET OF COSTS</div><h2>Кривая капитала</h2></div><span class="lab-badge" id="equity-period">Walk-forward</span></header>
+        <div class="lab-performance"><div><span>Доходность net</span><strong id="metric-return">—</strong></div><div><span>Sharpe · daily × √252</span><strong id="metric-sharpe">—</strong></div><div><span>Макс. просадка</span><strong id="metric-dd">—</strong></div><div><span>Сделок</span><strong id="metric-trades">—</strong></div></div>
+        <div class="lab-canvas-wrap"><canvas id="equity-chart" aria-label="Историческая кривая капитала и бенчмарки" role="img"></canvas><div class="lab-chart-empty" id="equity-empty">Пока нет расчёта<br><small>Запустите DEMO для проверки контура или загрузите ISS MOEX.</small></div></div>
+        <div class="lab-chart-legend"><span><i class="legend-strategy"></i> Синтетический трейдер</span><span><i class="legend-imoex"></i> IMOEX · price index</span><span><i class="legend-ma"></i> EMA 10/40</span><span><i class="legend-rsi"></i> RSI 14</span></div>
+        <footer class="lab-panel-footer"><span>Один капитал и календарь · fees + adverse slippage · next-open</span><span id="metric-fees">Издержки: —</span></footer>
+      </section>
+      <aside class="lab-panel lab-state-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">DETERMINISTIC RISK LAYER</div><h2>Почему не торговать?</h2></div><span class="lab-state-indicator" id="risk-state">—</span></header>
+        <div class="lab-regime-block"><span>Режим якоря IMOEX</span><strong id="regime-label">Нет оценки</strong><p>Gaussian emissions + Markov transitions. Только forward filtering, без smoothing.</p></div>
+        <ul class="lab-risk-reasons" id="risk-reasons"><li>Нет OOS предсказаний</li><li>Реальные заявки технически отключены</li></ul>
+        <div class="lab-rule-note"><span>ПРЕЗУМПЦИЯ САМООБМАНА</span><p>Найденный сигнал считается шумом, пока не выдержит независимые проверки.</p></div>
+        <a href="#" class="lab-text-link" id="open-validation">Проверить устойчивость <span>↗</span></a>
+      </aside>
     </div>
-    <div class="compact-form">
-      <strong>Инструменты</strong>
-      {% for instrument in instruments %}<label class="checkbox-label"><input type="checkbox" checked disabled> {{ instrument.ticker }}</label>{% else %}<p class="empty-subtle">Активных инструментов нет.</p>{% endfor %}
-      <button class="button secondary" disabled>▶ Запустить</button>
-    </div>
+    <section class="lab-panel lab-signal-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">CALIBRATED PROBABILITIES</div><h2>Динамика состояния</h2></div><span class="lab-muted">Исторические закрытые OOS-бары, не LIVE</span></header>
+      <div class="lab-canvas-wrap small"><canvas id="probability-chart" aria-label="Динамика трёх вероятностей" role="img"></canvas></div>
+      <div class="lab-chart-legend"><span><i class="legend-strategy"></i> P(trend)</span><span><i class="legend-direction"></i> P(up | trend)</span><span><i class="legend-break"></i> P(break)</span></div>
+    </section>
+    <div class="lab-bottom-grid"><section class="lab-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">PORTFOLIO / CLOSED BAR</div><h2>Корзина наблюдения</h2></div><span class="lab-badge">LONG-ONLY</span></header><div class="lab-table-scroll"><table class="lab-table"><thead><tr><th>Тикер</th><th>P(trend)</th><th>P(up|trend)</th><th>P(break)</th><th>Режим</th></tr></thead><tbody id="asset-table"><tr><td colspan="5" class="lab-empty">Нет результатов</td></tr></tbody></table></div></section>
+      <section class="lab-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">NATIVE SHAP / FIT ONLY</div><h2>Что использует модель</h2></div><span class="lab-badge" id="feature-count">— признаков</span></header><div id="feature-bars" class="lab-feature-bars"><p class="lab-empty">Отбор признаков ещё не выполнен</p></div><footer class="lab-panel-footer">Elastic Net → time stability → SHAP + |corr| ≤ 0.9</footer></section></div>
   </div>
-  <div class="inline-alert warning">Запуск отключён до подключения изолированного backtest use case. Результаты и equity curve не будут выдуманы по неполной истории.</div>
-</section>
+
+  <div class="lab-pane" data-pane="validation" hidden>
+    <div class="lab-notice" id="evidence-note"><strong>Исследовательский результат ≠ доказанная стратегия.</strong> Все тесты ниже рассчитаны на development OOS. Последние 6–12 месяцев остаются закрытыми.</div>
+    <section class="lab-stat-grid"><article class="lab-stat-card"><span>DEFLATED SHARPE</span><strong id="dsr-value">—</strong><p>Поправка на trials, skew и raw kurtosis.</p><small id="trial-count">Число попыток: —</small></article><article class="lab-stat-card"><span>PBO / CSCV</span><strong id="pbo-value">—</strong><p>Вероятность переобучения выбора конфигурации.</p><small id="pbo-combos">Комбинации: —</small></article><article class="lab-stat-card"><span>HANSEN SPA</span><strong id="spa-value">—</strong><p>Stationary bootstrap против IMOEX.</p><small>p &lt; 0.05 — не гарантия alpha</small></article><article class="lab-stat-card"><span>WHITE REALITY CHECK</span><strong id="rc-value">—</strong><p>Без studentization, full-null recentering.</p><small id="bootstrap-note">Bootstrap: —</small></article></section>
+    <div class="lab-bottom-grid"><section class="lab-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">BRIER / RELIABILITY DIAGRAM</div><h2>Калибровка — не уверенность</h2></div><select id="calibration-head" aria-label="Голова калибровки"><option value="trend">P(trend)</option><option value="up">P(up | trend)</option><option value="break">P(break)</option></select></header><div class="lab-canvas-wrap small"><canvas id="calibration-chart" role="img" aria-label="Reliability diagram: предсказанная и наблюдаемая вероятность"></canvas></div><footer class="lab-panel-footer"><span id="brier-note">Brier: —</span><span>Диагональ = идеальная калибровка</span></footer></section>
+      <section class="lab-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">COMBINATORIAL PURGED CV</div><h2>Не один удачный путь</h2></div><span class="lab-badge" id="cpcv-count">Не рассчитан</span></header><div id="cpcv-paths" class="lab-cpcv-paths"><p class="lab-empty">Для CPCV нужен завершённый прогон.</p></div><footer class="lab-panel-footer">Пути зависимы; CPCV не заменяет chronological final OOS.</footer></section></div>
+    <div class="lab-bottom-grid"><section class="lab-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">FAIL CLOSED / RESEARCH GATE</div><h2>Проверки допуска</h2></div><span class="lab-badge warning">LIVE OFF</span></header><ul class="lab-checklist" id="checklist"><li>Нет прогона для проверки</li></ul></section>
+      <section class="lab-panel lab-frozen-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">ONE-SHOT / UNTOUCHED HOLDOUT</div><h2>Замороженный период</h2></div><span class="lab-lock">⌑</span></header><div class="lab-frozen-status" id="frozen-status">Закрыт</div><p id="frozen-description">Хранится отдельно. Не используется ни для признакового отбора, ни для обучения, ни для подбора порогов.</p><dl class="lab-provenance"><div><dt>Cutoff</dt><dd id="cutoff-value">—</dd></div><div><dt>Dataset SHA256</dt><dd id="dataset-hash">—</dd></div><div><dt>Фиксированная модель</dt><dd id="model-hash">—</dd></div><div><dt>Версия фичей</dt><dd id="feature-version">—</dd></div><div><dt>PSI alert</dt><dd id="psi-alert">—</dd></div></dl><button type="button" class="lab-button caution" id="final-open" disabled>Раскрыть final OOS один раз ↗</button><p class="lab-frozen-warning">Раскрытие необратимо, включая отмену или ошибку worker. Автовыката в LIVE нет.</p><div id="final-result" class="lab-notice" hidden></div></section></div>
+    <section class="lab-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">TEMPORAL SPLITS / LEAKAGE AUDIT</div><h2>Walk-forward фолды</h2></div><span class="lab-muted">Все assets одного timestamp — в одном fold</span></header><div class="lab-table-scroll"><table class="lab-table"><thead><tr><th>Fold</th><th>OOS период</th><th>Train / Test</th><th>Purged</th><th>Features</th><th>Brier trend / up / break</th><th>Утечки</th></tr></thead><tbody id="fold-table"><tr><td colspan="7" class="lab-empty">Нет рассчитанных фолдов</td></tr></tbody></table></div></section>
+    <details class="lab-method-notes"><summary>Ограничения данных и методологии</summary><ul id="method-warnings"><li>Foundation models, TFT/PatchTST, GAT и CNN — следующие исследовательские этапы, не реализованные модели этого baseline.</li></ul></details>
+  </div>
+
+  <div class="lab-pane" data-pane="experiments" hidden>
+    <div class="lab-experiment-grid"><section class="lab-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">REPRODUCIBLE / IMMUTABLE CONFIG</div><h2>Новый эксперимент</h2></div><span class="lab-badge">Python 3.14</span></header>
+      <form id="experiment-form" class="lab-form">
+        <fieldset><legend>01 / Данные</legend><div class="lab-source-options"><label><input type="radio" name="source" value="demo" checked><strong>DEMO</strong><small>Искусственная история · без сети · не alpha</small></label><label><input type="radio" name="source" value="moex"><strong>ISS MOEX</strong><small>Реальная история · 7–10 лет · без авторизации</small></label></div>
+          <label>Корзина тикеров <span>IMOEX добавляется только как якорь</span><input name="symbols" value="{{ defaults.symbols|join(', ') }}" required maxlength="180" placeholder="SBER, GAZP, LKOH"></label>
+          <div class="lab-fields two"><label>Начало<input type="date" name="start" value="{{ defaults.start }}" required></label><label>Конец<input type="date" name="end" value="{{ defaults.end }}" required></label></div>
+          <div class="lab-fields three"><label>Базовый шаг<select name="interval"><option value="1h" selected>1H · рабочий</option><option value="10m">10m · ISS native</option><option value="1d">1D · проверка baseline</option></select></label><label>Горизонт H, баров<input type="number" name="horizon" value="{{ defaults.horizon }}" min="2" max="96" required></label><label>Frozen, месяцев<select name="freeze_months"><option value="6">6 месяцев</option><option value="9">9 месяцев</option><option value="12">12 месяцев</option></select></label></div>
+          <p class="lab-form-hint">4H агрегируется из полных 1H. 5m/15m не выдумываются из 10m. Интервал 1m не используется.</p>
+        </fieldset>
+        <fieldset><legend>02 / Модель и валидация</legend><div class="lab-fields three"><label>Итерации CatBoost<input type="number" name="iterations" value="{{ defaults.iterations }}" min="40" max="2000" required></label><label>WF фолдов<input type="number" name="folds" value="{{ defaults.folds }}" min="2" max="6" required></label><label>CPCV групп<select name="cpcv_groups"><option value="4">4 · 6 комбинаций</option><option value="6">6 · 15 комбинаций</option></select></label></div><div class="lab-checkbox-row"><label><input type="checkbox" name="cpcv" checked> CPCV + path distribution</label><label><input type="checkbox" name="layer_b" checked> Слой B: индикаторы / cross-asset</label></div><div class="lab-fields two"><label>Порог P(trend)<input type="number" step="0.01" min="0.01" max="0.99" name="trend_threshold" value="{{ defaults.risk.trend_threshold }}" required></label><label>Embargo, баров<input type="number" name="embargo_bars" value="{{ defaults.embargo_bars }}" min="1" max="96" required></label></div><p class="lab-form-hint">Early-stop / SHAP validation и calibration — отдельные временные куски. Подбор на final запрещён.</p></fieldset>
+        <details class="lab-advanced"><summary>03 / Издержки, риск и воспроизводимость</summary><div class="lab-fields three"><label>Комиссия, bps/сторону<input type="number" name="commission_bps" value="{{ defaults.risk.commission_bps }}" min="0" max="500" step="0.1" required></label><label>Slippage, bps/сторону<input type="number" name="slippage_bps" value="{{ defaults.risk.slippage_bps }}" min="0" max="500" step="0.1" required></label><label>Дневная DD, %<input type="number" name="max_daily_drawdown" value="3" min="0.1" max="20" step="0.1" required></label></div><div class="lab-fields three"><label>Капитал, ₽<input type="number" name="initial_capital" value="{{ defaults.initial_capital }}" min="10000" max="1000000000" required></label><label>Риск на сделку, %<input type="number" name="risk_per_trade" value="1" min="0.01" max="5" step="0.01" required></label><label>Random seed<input type="number" name="seed" value="{{ defaults.seed }}" min="0" max="2147483647" required></label></div><label>Дополнительные trials (ручные попытки)<input type="number" name="additional_trials" value="0" min="0" max="1000000"></label><label class="lab-checkbox"><input type="checkbox" name="mlflow_tracking"> Local MLflow registry (extra mlops)</label><label class="lab-checkbox"><input type="checkbox" name="l1_auxiliary"> Ретроспективные ℓ1 auxiliary labels (никогда не features)</label></details>
+        <div class="lab-submit-row"><span>Никаких реальных заявок.<br><small>Конфиг сохраняется до вычисления.</small></span><button type="submit" class="lab-button primary" id="launch-experiment">Запустить исследование <span>→</span></button></div>
+      </form>
+    </section>
+    <aside class="lab-experiment-side"><section class="lab-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">THE EXPERIMENT CONTRACT</div><h2>Что проверяем</h2></div></header><ol class="lab-pipeline-list"><li><span>01</span><div><strong>Данные → закрытые бары</strong><p>UTC, OHLC checks, SHA256 snapshot и отдельно frozen period.</p></div></li><li><span>02</span><div><strong>Сигнал → три вероятности</strong><p>ATR barriers, causal Markov context, стабильные фичи и CatBoost.</p></div></li><li><span>03</span><div><strong>Вероятности → риск</strong><p>Vol targeting, lot sizing, корреляции, stop / trailing / kill.</p></div></li><li><span>04</span><div><strong>Проверка → сомнение</strong><p>Purged WF / CPCV / PBO / DSR / SPA / RC. Без cherry-picking.</p></div></li></ol></section><div class="lab-notice"><strong>DEMO — тест инфраструктуры.</strong> Положительная доходность на искусственных данных не является свидетельством пригодности модели для рынка.</div><section class="lab-panel lab-download-panel"><div class="lab-eyebrow">ARTIFACTS / SELECTED RUN</div><h3>Всё для воспроизведения</h3><a id="download-json" class="lab-download disabled" aria-disabled="true">Полный отчёт <span>JSON ↗</span></a><a id="download-md" class="lab-download disabled" aria-disabled="true">Краткий отчёт <span>MD ↗</span></a><a id="download-predictions" class="lab-download disabled" aria-disabled="true">Предсказания + факты <span>PARQUET ↗</span></a><p class="lab-form-hint">CBM + JSON calibration сохраняются локально. Dataset, features и models не попадают в Git.</p></section></aside></div>
+    <section class="lab-panel lab-history-panel"><header class="lab-panel-heading"><div><div class="lab-eyebrow">EXPERIMENT LEDGER</div><h2>История прогонов</h2></div><button type="button" class="lab-button ghost" id="refresh-runs">↻ Обновить</button></header><div class="lab-table-scroll"><table class="lab-table"><thead><tr><th>Run ID</th><th>Источник / корзина</th><th>Шаг</th><th>Начат</th><th>Состояние</th><th></th></tr></thead><tbody id="run-history"><tr><td colspan="6" class="lab-empty">Пока нет экспериментов. Начните с воспроизводимого DEMO.</td></tr></tbody></table></div></section>
+  </div>
+  <footer class="lab-disclaimer"><span>RESEARCH IS NOT ALPHA.</span><p>Нельзя считать доходность доказанной до untouched final OOS, аудита корпоративных действий и shadow-проверки исполнения. Автоторговля новой моделью отключена.</p></footer>
+  <dialog id="final-dialog" class="lab-dialog"><div class="lab-eyebrow">НЕОБРАТИМОЕ ДЕЙСТВИЕ</div><h2>Раскрыть final OOS?</h2><p>Зафиксированные модель и пороги будут проверены один раз. После чтения этот период уже нельзя использовать для независимой оценки, даже если вычисление отменено или завершилось ошибкой.</p><label>Введите <strong>ОТКРЫТЬ FINAL OOS</strong><input id="final-confirmation" autocomplete="off" placeholder="Точное подтверждение"></label><div class="lab-dialog-actions"><button type="button" id="final-cancel" class="lab-button ghost">Не раскрывать</button><button type="button" id="final-confirm" class="lab-button caution" disabled>Раскрыть один раз</button></div></dialog>
+</div>
 {% endblock %}

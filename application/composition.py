@@ -31,6 +31,7 @@ from application.use_cases.manage_app_config import (
     save_default_mode,
     save_preferred_account_id,
 )
+from application.use_cases.research import ResearchService
 from application.use_cases.run_decision_cycle import DecisionCycleReport
 from application.use_cases.select_account import (
     OPEN_ACCOUNT_STATUS,
@@ -87,6 +88,7 @@ class AppContext:
     broker_latency_ms: int | None = None
     storage_memory_limit_mb: int | None = None
     decision_scan_report: DecisionCycleReport | None = None
+    research: ResearchService | None = None
 
     @property
     def execution_mode(self) -> ExecutionMode:
@@ -123,7 +125,13 @@ class AppContext:
 
     async def aclose(self) -> None:
         """Аккуратно закрывает ресурсы адаптеров."""
-        for resource in (self.market_data, self.broker, self.repository, self.archive):
+        for resource in (
+            self.market_data,
+            self.broker,
+            self.repository,
+            self.archive,
+            self.research,
+        ):
             close = getattr(resource, "aclose", None)
             if close is not None:
                 try:
@@ -456,3 +464,10 @@ def _default_config(settings: Settings) -> StrategyConfig:
         confluence_threshold=Decimal("0.3"),
         confluence_weights=dict(DEFAULT_CONFLUENCE_WEIGHTS),
     )
+
+
+def build_research_service(settings: Settings) -> ResearchService:
+    """Отдельный compute adapter; не получает broker, portfolio или API token."""
+    from synthetic_trader.manager import ResearchManager
+
+    return ResearchManager(settings.storage.data_dir / "research")
