@@ -88,7 +88,7 @@ def fetch_moex_iss_candles_sync(
     )
 
     try:
-        req = urllib.request.Request(
+        req = urllib.request.Request(  # noqa: S310
             url,
             headers={"Accept": "application/json", "User-Agent": "RedBot-Investment/0.2"},
             method="GET",

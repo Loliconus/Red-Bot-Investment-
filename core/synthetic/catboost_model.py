@@ -25,6 +25,7 @@ import importlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from core.synthetic.calibration import CalibrationReport, ProbabilityCalibrator
 

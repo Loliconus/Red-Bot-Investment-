@@ -28,7 +28,7 @@ from core.domain.entities import (
     TradePlan,
 )
 from core.domain.enums import OrderStatus, Timeframe, TradePlanStatus
-from core.domain.value_objects import OHLCV, OrderbookSnapshot
+from core.domain.value_objects import OHLCV, CandleSeries, OrderbookSnapshot
 from core.journal.hypothesis_engine import Hypothesis
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
 from core.journal.trade_review import TradeReview
