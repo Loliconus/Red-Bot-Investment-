@@ -545,3 +545,20 @@ async def test_dashboard_survives_plan_without_instrument(
     plans = duckdb_client.get("/api/trading/plans", headers={"X-Red-Bot-Token": token})
     assert plans.status_code == 200
     assert len(plans.json()) == 1
+
+
+async def test_backtest_page_renders_svg_charts_and_persists_candles_and_weights(
+    duckdb_client: Any, duckdb_context: AppContext
+) -> None:
+    """Экран /backtest рендерит SVG-графики, сохраняет свечи в DuckDB и веса на диск."""
+    _login(duckdb_client)
+    page = duckdb_client.get("/backtest")
+    assert page.status_code == 200, page.text[:600]
+    assert 'id="bt-svg-equity"' in page.text
+    assert 'id="bt-svg-price"' in page.text
+    assert 'id="bt-svg-prob"' in page.text
+    assert "/static/js/backtest-arena.js" in page.text
+    assert "weights_SBER_1h.json" in page.text
+    sizes = await duckdb_context.repository.table_sizes()
+    assert sizes.get("candles", 0) >= 40
+

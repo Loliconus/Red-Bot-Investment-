@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 
 from adapters.driving.web.dependencies import ContextDep, SessionDep, require_session
-from adapters.driving.web.render import render_page, templates
+from adapters.driving.web.render import render_page, render_partial
 from application.use_cases.run_backtest import (
     BacktestRunParameters,
     run_synthetic_backtest,
@@ -512,11 +512,10 @@ async def run_backtest_endpoint(
 
     report = await run_synthetic_backtest(context, params)
     chart_json, svg_bundle = _build_chart_payload(report, params)
-    return templates.TemplateResponse(
+    return render_partial(
         request,
         "partials/backtest_report.html",
         {
-            "request": request,
             "params": params,
             "report": report,
             "chart_json": chart_json,
