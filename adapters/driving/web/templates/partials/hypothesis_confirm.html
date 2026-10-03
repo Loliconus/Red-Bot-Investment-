@@ -1,0 +1,29 @@
+{% if message %}
+<div class="inline-alert success">{{ message }}</div>
+{% elif hypothesis %}
+<div class="overlay force-visible" x-data role="presentation" x-on:click.self="$el.closest('#modal-root').innerHTML = ''">
+  <div class="confirm-dialog decision-dialog" role="dialog" aria-modal="true">
+    <button type="button" class="icon-button modal-close" x-on:click="$el.closest('#modal-root').innerHTML = ''">×</button>
+    <div class="eyebrow">ПОДТВЕРЖДЁННАЯ ГИПОТЕЗА / {{ hypothesis.id }}</div>
+    <h3>Одобрить к ручной настройке?</h3>
+    <p>{{ hypothesis.text }}</p>
+    <div class="diff-columns">
+      <div><small>БЫЛО</small><strong>Стратегия v{{ config_version }}</strong></div>
+      <span>→</span>
+      <div><small>ПРЕДЛОЖЕНО</small><strong>{{ hypothesis.suggested_action or 'Числовые параметры не заданы' }}</strong></div>
+    </div>
+    <div class="inline-alert warning">Система не хранит структурированный diff для свободного текста гипотезы. Одобрение изменяет её статус, но НЕ параметры стратегии.</div>
+    <form hx-post="/journal/hypotheses/{{ hypothesis.id }}/approve" hx-target="#modal-root">
+      <label>Введите <strong>{{ confirm_phrase }}</strong>
+        <input name="confirmation" required autocomplete="off" placeholder="{{ confirm_phrase }}">
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" x-on:click="$el.closest('#modal-root').innerHTML = ''">Отмена</button>
+        <button type="submit" class="button primary">Одобрить гипотезу</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% else %}
+<div class="inline-alert danger">{{ error }}</div>
+{% endif %}

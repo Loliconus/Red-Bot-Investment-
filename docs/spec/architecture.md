@@ -38,9 +38,9 @@
 
 | Порт | Файл | Что делает |
 | :-- | :-- | :-- |
-| `MarketDataPort` | `market_data.py` | свечи, стакан, технические индикаторы API, резолв инструмента |
+| `MarketDataPort` | `market_data.py` | свечи, стакан, технические индикаторы API, резолв инструмента, справочник инструментов из API |
 | `OrderExecutionPort` | `broker.py` | отправка/отмена заявок, статус, закрытие позиции, открытые позиции |
-| `RepositoryPort` | `persistence.py` | снапшоты, планы, сделки, гипотезы, конфиг, инструменты |
+| `RepositoryPort` | `persistence.py` | снапшоты, планы, сделки, гипотезы, конфиг, инструменты и сохранённый каталог |
 | `ArchivePort` | `archive.py` | перенос в холодный слой, компактация, бэкап, метрики слоёв |
 | `ClockPort` | `clock.py` | «сейчас» — подменяется в тестах (`FrozenClock`) |
 | `NotificationPort` | `notifier.py` | уведомления, включая критические |
@@ -138,8 +138,9 @@
 
 ## Конфигурация (`config/`)
 
-* `settings.py` — Pydantic Settings, префикс `REDBOT__`, `extra="forbid"`,
-  fail-fast валидация (live без токена/счёта, insecure TLS в live).
+* `settings.py` — Pydantic Settings, префикс `REDBOT_`, `extra="forbid"`,
+  проверка токена/TLS; account ID может отсутствовать и выбирается по открытым счетам через API.
+* Режим следующего запуска и раздельные live/sandbox account defaults хранятся в DuckDB `operational_settings`; `.env` для них не требуется.
 * `secrets_source.py` — keyring как источник токена с низшим приоритетом.
 * `logging_config.py` — structlog + редактирование секретов в логах.
 * `seed_defaults.py` — дефолты стратегии, **загружаемые в БД** при bootstrap.

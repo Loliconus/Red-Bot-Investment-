@@ -13,6 +13,7 @@ from adapters.driving.web.schemas import (
     OkResponse,
     StatusResponse,
 )
+from application.use_cases.gui_control import set_soft_pause
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -44,12 +45,9 @@ async def kill_switch(
     _session: SessionDep,
     payload: KillSwitchRequest,
 ) -> OkResponse:
-    if context.kill_switch is None:
-        raise HTTPException(status_code=503, detail="Kill switch не инициализирован")
-    if payload.engaged:
-        await context.kill_switch.engage(payload.reason, initiated_by="gui")
-    else:
-        context.kill_switch.release()
-    return OkResponse(
-        ok=True, detail=f"kill switch: {'включён' if payload.engaged else 'выключен'}"
-    )
+    # Старый API переключает только soft pause. Hard Stop не снимается HTTP-ручками.
+    try:
+        await set_soft_pause(context, engaged=payload.engaged, reason=payload.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return OkResponse(ok=True, detail=f"soft pause: {'включена' if payload.engaged else 'снята'}")

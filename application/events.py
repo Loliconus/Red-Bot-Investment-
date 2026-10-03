@@ -12,11 +12,26 @@ import asyncio
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
+
+from core.ports.persistence import DecisionRecord
 
 Handler = Callable[[Any], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRecorded:
+    record: DecisionRecord
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionCycleCompleted:
+    """Проход по корзине завершён: полный отчёт доступен в ``report``."""
+
+    report: Any
 
 
 class EventBus:

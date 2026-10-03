@@ -16,6 +16,11 @@ wheels/
 .installed.cfg
 *.egg
 
+# Frontend development toolchain (compiled assets are committed)
+node_modules/
+!adapters/driving/web/assets/package.json
+!adapters/driving/web/assets/package-lock.json
+
 # Virtual environments
 .venv/
 venv/
@@ -43,8 +48,11 @@ coverage.xml
 secrets/
 token*.txt
 
-# Project data (история свечей, базы состояния, логи)
-data/
+# Project data (история свечей, базы состояния, логи; веса моделей в data/models/ версионируются)
+data/*
+!data/models/
+data/models/*
+!data/models/*.json
 var/
 logs/
 *.db

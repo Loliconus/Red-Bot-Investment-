@@ -1,0 +1,90 @@
+{% if message %}<div class="inline-alert success" role="status">✓ {{ message }}</div>{% endif %}
+{% if error %}<div class="inline-alert danger" role="alert">⚠ {{ error }}</div>{% endif %}
+
+<div class="sandbox-admin-box">
+  <div class="sandbox-active-card">
+    <div class="sandbox-active-head">
+      <div>
+        <small class="field-caption">АКТИВНЫЙ СЧЁТ (SANDBOX)</small>
+        <div class="sandbox-account-id">{{ account.account_id if account.account_id else 'Не выбран' }}</div>
+      </div>
+      <div class="sandbox-active-actions">
+        <span class="pill warning">ПЕСОЧНИЦА</span>
+        <form hx-post="/risk/account/sandbox/refresh" hx-target="#sandbox-account-container">
+          <button type="submit" class="button small secondary" title="Обновить баланс">⟳ Обновить</button>
+        </form>
+      </div>
+    </div>
+    <div class="sandbox-metrics">
+      <div><small>ОБЩИЙ БАЛАНС</small><strong class="accent">{{ '{:,.0f}'.format(account.total_value|float)|replace(',', ' ') }} ₽</strong></div>
+      <div><small>СВОБОДНЫЕ СРЕДСТВА</small><strong>{{ '{:,.0f}'.format(account.available_cash|float)|replace(',', ' ') }} ₽</strong></div>
+      <div><small>В ПОЗИЦИЯХ</small><strong class="muted">{{ '{:,.0f}'.format(account.positions_value|float)|replace(',', ' ') }} ₽</strong></div>
+    </div>
+    <div class="sandbox-topup">
+      <small class="field-caption">БЫСТРОЕ ПОПОЛНЕНИЕ ВИРТУАЛЬНЫМИ СРЕДСТВАМИ:</small>
+      <div class="sandbox-topup-row">
+        <form hx-post="/risk/account/sandbox/topup" hx-target="#sandbox-account-container">
+          <input type="hidden" name="amount" value="100000">
+          <button type="submit" class="button small secondary">+ 100 000 ₽</button>
+        </form>
+        <form hx-post="/risk/account/sandbox/topup" hx-target="#sandbox-account-container">
+          <input type="hidden" name="amount" value="500000">
+          <button type="submit" class="button small secondary">+ 500 000 ₽</button>
+        </form>
+        <form hx-post="/risk/account/sandbox/topup" hx-target="#sandbox-account-container">
+          <input type="hidden" name="amount" value="1000000">
+          <button type="submit" class="button small secondary">+ 1 000 000 ₽</button>
+        </form>
+        <form hx-post="/risk/account/sandbox/topup" hx-target="#sandbox-account-container" class="sandbox-custom-topup">
+          <input type="number" name="amount" min="1000" max="10000000" step="10000" placeholder="Другая сумма" required>
+          <button type="submit" class="button small primary">Пополнить</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="sandbox-list-card">
+    <div class="sandbox-list-head">
+      <strong>Счета в песочнице ({{ account.accounts|length }})</strong>
+      <form hx-post="/risk/account/sandbox/create" hx-target="#sandbox-account-container">
+        <input type="hidden" name="name" value="Счёт в песочнице">
+        <button type="submit" class="button small primary">+ Создать новый счёт</button>
+      </form>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table compact-table">
+        <thead>
+          <tr><th>ID СЧЁТА</th><th>НАЗВАНИЕ</th><th>СТАТУС</th><th class="text-right">ДЕЙСТВИЯ</th></tr>
+        </thead>
+        <tbody>
+          {% for acc in account.accounts %}
+          <tr {% if acc.is_current %}class="row-active"{% endif %}>
+            <td class="mono">
+              <strong>{{ acc.id }}</strong>
+              {% if acc.is_current %}<span class="tag row-tag">ТЕКУЩИЙ</span>{% endif %}
+            </td>
+            <td>{{ acc.name if acc.name else 'Счёт в песочнице' }}</td>
+            <td><span class="pill {{ 'success' if acc.is_current else 'neutral' }}">{{ 'АКТИВЕН' if acc.is_current else 'ГОТОВ' }}</span></td>
+            <td class="text-right row-actions">
+              {% if not acc.is_current %}
+              <form hx-post="/risk/account/sandbox/switch" hx-target="#sandbox-account-container">
+                <input type="hidden" name="account_id" value="{{ acc.id }}">
+                <button type="submit" class="button small secondary">Сделать активным</button>
+              </form>
+              <form hx-post="/risk/account/sandbox/close" hx-target="#sandbox-account-container">
+                <input type="hidden" name="account_id" value="{{ acc.id }}">
+                <button type="submit" class="button small danger" title="Закрыть счёт" onclick="return confirm('Закрыть счёт {{ acc.id }} в песочнице?');">✕</button>
+              </form>
+              {% else %}
+              <span class="row-current">● Выбран</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="table-empty">Счета в песочнице не найдены. Нажмите «+ Создать новый счёт» выше.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>

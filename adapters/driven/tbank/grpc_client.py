@@ -7,22 +7,20 @@
 Импорт SDK — ленивый: если пакет не установлен, старт падает с понятной
 ошибкой, а не с ``ModuleNotFoundError`` в случайном месте.
 
-TLS: конструктор ``AsyncClient`` не принимает объект ``grpc.ChannelCredentials``
-(в сигнатуре только token/target/sandbox_token/options/app_name/interceptors),
-поэтому кастомный CA-бандл подключается через переменную окружения
-``GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`` — её читает сам gRPC C-core в момент
-построения дефолтных SSL-credentials внутри SDK.
+TLS: SDK самостоятельно создает gRPC credentials и не принимает
+``channel_credentials``. Поддерживаемый путь — ``SSL_TBANK_VERIFY=True``:
+SDK использует встроенный корневой сертификат НУЦ Минцифры РФ.
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from contextlib import AsyncExitStack
 from typing import Any
 
 import structlog
 
-from adapters.driven.tbank.tls import resolve_ca_path
+from adapters.driven.tbank.tls import configure_sdk_tls
+from config.enums import ExecutionMode
 from config.settings import Settings, target_for_mode
 
 logger = structlog.get_logger(__name__)
@@ -34,7 +32,7 @@ class SdkUnavailableError(RuntimeError):
 
 def _import_async_client() -> Any:
     try:
-        from t_tech.invest import AsyncClient  # pyright: ignore[reportMissingImports]
+        from t_tech.invest.grpc import AsyncClient  # pyright: ignore[reportMissingImports]
     except ImportError as exc:  # pragma: no cover - зависит от установки
         msg = (
             "Пакет t-tech-investments не установлен. Установите его из реестра Т-Банка:\n"
@@ -48,30 +46,29 @@ def _import_async_client() -> Any:
 class TInvestChannel:
     """Долгоживущее подключение к API."""
 
-    __slots__ = ("_ca_path", "_client", "_services", "_target", "_token")
+    __slots__ = ("_client", "_exit_stack", "_services", "_target", "_token")
 
-    def __init__(self, target: str, token: str, *, ca_path: Path) -> None:
+    def __init__(self, target: str, token: str) -> None:
         self._target = target
         self._token = token
-        self._ca_path = ca_path
         self._client: Any = None
+        self._exit_stack: AsyncExitStack | None = None
         self._services: Any = None
 
     @classmethod
-    async def create(cls, settings: Settings) -> TInvestChannel:
+    async def create(
+        cls,
+        settings: Settings,
+        mode: ExecutionMode | None = None,
+    ) -> TInvestChannel:
         """Асинхронная фабрика: входит в контекст клиента SDK."""
         async_client = _import_async_client()
-        target = target_for_mode(settings)
-        ca_path = resolve_ca_path(settings.tbank.ca_bundle_path)
-
-        # У AsyncClient нет kwarg для credentials — CA-бандл подключается
-        # только через переменную окружения, которую читает gRPC C-core.
-        os.environ["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"] = str(ca_path)
+        target = target_for_mode(settings, mode)
+        configure_sdk_tls()
 
         channel = cls(
             target=target,
             token=settings.tbank.api_token.get_secret_value(),
-            ca_path=ca_path,
         )
 
         client = async_client(
@@ -79,11 +76,21 @@ class TInvestChannel:
             target=target,
             app_name="red-bot",
         )
-        services = await client.__aenter__()
-        channel._client = client
-        channel._services = services
-        logger.info("tinvest_channel_created", target=target, ca=str(ca_path))
+        await channel._enter_client(client)
+        logger.info("tinvest_channel_created", target=target)
         return channel
+
+    async def _enter_client(self, client: Any) -> None:
+        """Enter and retain an SDK async context manager for channel lifetime."""
+        stack = AsyncExitStack()
+        try:
+            services = await stack.enter_async_context(client)
+        except BaseException:
+            await stack.aclose()
+            raise
+        self._client = client
+        self._exit_stack = stack
+        self._services = services
 
     @property
     def services(self) -> Any:
@@ -98,13 +105,17 @@ class TInvestChannel:
         return self._target
 
     async def aclose(self) -> None:
-        if self._client is not None:
-            await self._client.__aexit__(None, None, None)
+        if self._exit_stack is not None:
+            stack, self._exit_stack = self._exit_stack, None
+            await stack.aclose()
             self._client = None
             self._services = None
             logger.info("tinvest_channel_closed", target=self._target)
 
 
-async def create_channel(settings: Settings) -> TInvestChannel:
+async def create_channel(
+    settings: Settings,
+    mode: ExecutionMode | None = None,
+) -> TInvestChannel:
     """Публичная точка создания канала (используется в ``composition``)."""
-    return await TInvestChannel.create(settings)
+    return await TInvestChannel.create(settings, mode=mode)

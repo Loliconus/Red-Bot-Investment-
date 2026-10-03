@@ -1,8 +1,8 @@
 """Единственная точка правды bootstrap-конфигурации.
 
 Принципы:
-* fail-fast — процесс падает на инициализации ``Settings``, до первого сетевого
-  вызова, если конфигурация неполна или небезопасна;
+* fail-fast — процесс падает на инициализации ``Settings`` при небезопасной
+  конфигурации; account ID может быть пустым и разрешается через брокерский API;
 * ``extra="forbid"`` — опечатка в ``.env`` это ошибка, а не молчаливый игнор;
 * секреты — только ``SecretStr``;
 * ``Settings`` неизменяем в течение жизни процесса и не перечитывается.
@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from config.enums import ExecutionMode, LogLevel
@@ -28,17 +28,43 @@ class TBankSettings(BaseModel):
     api_token: SecretStr
     account_id: str = Field(
         default="",
-        description="managed_account_id — единственный счёт, с которым разрешена торговля",
+        description=(
+            "Необязательный явный account ID override; иначе приложение выберет открытый счёт"
+        ),
     )
     grpc_target_live: str = "invest-public-api.tbank.ru:443"
     grpc_target_sandbox: str = "sandbox-invest-public-api.tbank.ru:443"
-    ca_bundle_path: Path = Path("config/certs/russian_trusted_ca.pem")
+    ca_bundle_path: Path = Field(
+        default=Path("config/certs/russian_trusted_ca.pem"),
+        description="Legacy path; SDK uses its embedded Russian trusted CA via SSL_TBANK_VERIFY.",
+    )
     insecure_tls_dev_only: bool = Field(
         default=False,
-        description="Аварийный люк: полное отключение проверки TLS. Запрещён в LIVE.",
+        description="Legacy option; TLS verification is always enabled by the SDK adapter.",
     )
     max_subscriptions_per_channel: int = Field(default=300, ge=1, le=300)
     orderbook_depth: int = Field(default=20, ge=1, le=50)
+
+    @field_validator("grpc_target_live")
+    @classmethod
+    def _official_live_target(cls, value: str) -> str:
+        if value != "invest-public-api.tbank.ru:443":
+            raise ValueError("Для live разрешен только invest-public-api.tbank.ru:443")
+        return value
+
+    @field_validator("grpc_target_sandbox")
+    @classmethod
+    def _official_sandbox_target(cls, value: str) -> str:
+        if value != "sandbox-invest-public-api.tbank.ru:443":
+            raise ValueError("Для sandbox разрешен только sandbox-invest-public-api.tbank.ru:443")
+        return value
+
+    @field_validator("orderbook_depth")
+    @classmethod
+    def _supported_orderbook_depth(cls, value: int) -> int:
+        if value not in {1, 10, 20, 30, 40, 50}:
+            raise ValueError("orderbook_depth должен быть одним из: 1, 10, 20, 30, 40, 50")
+        return value
 
 
 class StorageSettings(BaseModel):
@@ -94,18 +120,12 @@ class Settings(BaseSettings):
     web: WebSettings = WebSettings()
 
     @model_validator(mode="after")
-    def _forbid_insecure_tls_in_live(self) -> Settings:
-        if self.execution_mode is ExecutionMode.LIVE and self.tbank.insecure_tls_dev_only:
+    def _forbid_insecure_tls_bypass(self) -> Settings:
+        if self.tbank.insecure_tls_dev_only:
             raise ValueError(
-                "insecure_tls_dev_only запрещён в режиме LIVE: "
-                "уберите флаг или смените execution_mode"
+                "insecure_tls_dev_only больше не поддерживается: SDK всегда проверяет TLS "
+                "и использует встроенный CA через SSL_TBANK_VERIFY=True"
             )
-        return self
-
-    @model_validator(mode="after")
-    def _forbid_missing_account_in_live(self) -> Settings:
-        if self.execution_mode is ExecutionMode.LIVE and not self.tbank.account_id.strip():
-            raise ValueError("account_id обязателен для режима LIVE")
         return self
 
     @model_validator(mode="after")
@@ -155,8 +175,9 @@ def reset_settings_cache() -> None:
     _settings_instance = None
 
 
-def target_for_mode(settings: Settings) -> str:
-    """Возвращает gRPC-target для текущего контура исполнения."""
-    if settings.execution_mode is ExecutionMode.LIVE:
+def target_for_mode(settings: Settings, mode: ExecutionMode | None = None) -> str:
+    """Возвращает gRPC-target для текущего или явно разрешённого execution mode."""
+    resolved_mode = mode or settings.execution_mode
+    if resolved_mode is ExecutionMode.LIVE:
         return settings.tbank.grpc_target_live
     return settings.tbank.grpc_target_sandbox

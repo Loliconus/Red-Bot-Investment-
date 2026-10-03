@@ -8,6 +8,12 @@
   до 5m/15m, снапшоты стакана удаляются);
 * **cold** — всё старше: Parquet + ZSTD, доступно через ``read_parquet``.
 
+``instrument_catalog`` — кеш справочника инструментов из ``InstrumentsService``:
+данные приходят из API и сохраняются здесь, потому что списки API ограничены
+по частоте (15 запросов в минуту), а GUI нужен мгновенный поиск по тикеру и
+названию. Это единственный источник каталога: хардкод тикеров, лотов и UID в
+коде запрещён — он молча устаревает после делистинга или сплита.
+
 Снапшоты хранятся как JSON-поля: структура у них глубоко вложенная и
 изменяемая, а нормализация в десяток таблиц резко усложнила бы запись без
 выигрыша для дата-майнинга (DuckDB умеет работать с JSON как с данными).
@@ -15,7 +21,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 DDL_STATEMENTS: tuple[str, ...] = (
     """
@@ -32,6 +38,30 @@ DDL_STATEMENTS: tuple[str, ...] = (
         lot_size INTEGER NOT NULL,
         is_benchmark BOOLEAN NOT NULL DEFAULT FALSE,
         currency VARCHAR NOT NULL DEFAULT 'RUB'
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS instrument_catalog (
+        uid VARCHAR PRIMARY KEY,
+        ticker VARCHAR NOT NULL,
+        class_code VARCHAR NOT NULL,
+        name VARCHAR NOT NULL DEFAULT '',
+        lot_size INTEGER NOT NULL,
+        currency VARCHAR NOT NULL DEFAULT 'RUB',
+        instrument_type VARCHAR NOT NULL DEFAULT 'share',
+        isin VARCHAR NOT NULL DEFAULT '',
+        figi VARCHAR NOT NULL DEFAULT '',
+        api_trade_available BOOLEAN NOT NULL DEFAULT TRUE,
+        buy_available BOOLEAN NOT NULL DEFAULT TRUE,
+        sell_available BOOLEAN NOT NULL DEFAULT TRUE,
+        for_iis BOOLEAN NOT NULL DEFAULT FALSE,
+        for_qual_investor BOOLEAN NOT NULL DEFAULT FALSE,
+        exchange VARCHAR NOT NULL DEFAULT '',
+        sector VARCHAR NOT NULL DEFAULT '',
+        country_of_risk VARCHAR NOT NULL DEFAULT '',
+        liquidity_flag BOOLEAN NOT NULL DEFAULT FALSE,
+        min_price_increment DECIMAL(18, 9),
+        updated_at TIMESTAMPTZ NOT NULL
     )
     """,
     """
@@ -142,14 +172,45 @@ DDL_STATEMENTS: tuple[str, ...] = (
         updated_at TIMESTAMPTZ NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS gui_audit (
+        id VARCHAR PRIMARY KEY,
+        ts TIMESTAMPTZ NOT NULL,
+        section VARCHAR NOT NULL,
+        action VARCHAR NOT NULL,
+        before_value VARCHAR NOT NULL,
+        after_value VARCHAR NOT NULL,
+        outcome VARCHAR NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS operational_settings (
+        key VARCHAR PRIMARY KEY,
+        value VARCHAR NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ws_replay (
+        channel VARCHAR NOT NULL,
+        seq BIGINT NOT NULL,
+        ts TIMESTAMPTZ NOT NULL,
+        event_type VARCHAR NOT NULL,
+        payload VARCHAR NOT NULL,
+        PRIMARY KEY (channel, seq)
+    )
+    """,
 )
 
 INDEX_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_candles_ts ON candles (instrument_uid, timeframe, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_instrument_catalog_ticker ON instrument_catalog (ticker)",
+    "CREATE INDEX IF NOT EXISTS idx_instrument_catalog_type ON instrument_catalog (instrument_type)",
     "CREATE INDEX IF NOT EXISTS idx_market_snapshots_time ON market_snapshots (captured_at)",
     "CREATE INDEX IF NOT EXISTS idx_decision_created ON decision_snapshots (created_at)",
     "CREATE INDEX IF NOT EXISTS idx_plans_status ON trade_plans (status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_trades_closed ON trades (closed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_gui_audit_time ON gui_audit (ts)",
 )
 
 
@@ -165,6 +226,7 @@ def version_statement() -> str:
 TABLES: tuple[str, ...] = (
     "schema_meta",
     "instruments",
+    "instrument_catalog",
     "candles",
     "orderbook_snapshots",
     "market_snapshots",
@@ -174,4 +236,7 @@ TABLES: tuple[str, ...] = (
     "hypotheses",
     "strategy_configs",
     "portfolio_states",
+    "gui_audit",
+    "operational_settings",
+    "ws_replay",
 )

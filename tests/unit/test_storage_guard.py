@@ -19,9 +19,6 @@ from adapters.driven.storage.connection_pool import is_select_only
         "select count(*) from candles",
         "  SELECT 1",
         "WITH x AS (SELECT 1) SELECT * FROM x",
-        "PRAGMA show_tables",
-        "DESCRIBE trades",
-        "EXPLAIN SELECT 1",
         "SELECT * FROM trades LIMIT 10;",
     ],
 )
@@ -32,6 +29,9 @@ def test_readonly_queries_allowed(query: str) -> None:
 @pytest.mark.parametrize(
     "query",
     [
+        "PRAGMA show_tables",
+        "DESCRIBE trades",
+        "EXPLAIN SELECT 1",
         "DELETE FROM trades",
         "DROP TABLE trades",
         "UPDATE trades SET verdict = 'loss'",
@@ -54,6 +54,19 @@ def test_mutation_queries_blocked(query: str) -> None:
 def test_semicolon_in_middle_blocks_query() -> None:
     """Склейка двух команд через точку с запятой запрещена."""
     assert not is_select_only("SELECT 1; DELETE FROM trades")
+
+
+def test_private_tables_blocked_at_gui_boundary() -> None:
+    from application.use_cases.execute_readonly_query import validate_console_query
+
+    for query in (
+        "SELECT * FROM operational_settings",
+        "SELECT * FROM portfolio_states",
+        "SELECT * FROM ws_replay",
+        "SELECT read_text('/etc/passwd')",
+    ):
+        with pytest.raises(ValueError):
+            validate_console_query(query)
 
 
 def test_empty_query_blocked() -> None:

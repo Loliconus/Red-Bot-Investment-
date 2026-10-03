@@ -1,0 +1,27 @@
+{% if message %}<div class="inline-alert success" role="status">{{ message }}</div>{% endif %}
+{% if error %}<div class="inline-alert danger" role="alert">{{ error }}</div>{% endif %}
+{% if not stopped %}<div class="inline-alert warning">Восстановление заблокировано: торговый процесс не остановлен.</div>{% endif %}
+<div class="backup-list">
+  {% for backup in backups %}
+  <div class="backup-item">
+    <div>
+      <span class="backup-symbol">▤</span>
+      <div><strong>{{ backup.id }}</strong><small>{{ backup.created_at[:19]|replace('T', ' ') }} UTC · {{ '{:.1f}'.format(backup.size_bytes / 1024**2) }} MB</small></div>
+    </div>
+    {% if not stopped %}
+    <button class="button secondary small" type="button" disabled>Восстановить</button>
+    {% else %}
+    <details>
+      <summary class="button secondary small">Восстановить</summary>
+      <form hx-post="/admin/storage/restore" hx-target="#backup-list">
+        <input type="hidden" name="backup_id" value="{{ backup.id }}">
+        <label>Введите <strong>ВОССТАНОВИТЬ</strong><input name="confirmation" placeholder="ВОССТАНОВИТЬ" required autocomplete="off"></label>
+        <button class="button danger small" type="submit">Заменить базу</button>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="empty-subtle">Резервных копий пока нет. Создайте первую перед изменениями.</p>
+  {% endfor %}
+</div>

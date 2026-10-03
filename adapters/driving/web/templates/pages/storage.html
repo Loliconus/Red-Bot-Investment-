@@ -1,0 +1,95 @@
+{% extends 'base.html' %}
+{% block head %}<script defer src="/static/js/sql-editor.js"></script>{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <div class="eyebrow">№ 10 · УПРАВЛЕНИЕ ХРАНИЛИЩЕМ <span class="eyebrow-line"></span> ПРИОРИТЕТ P0</div>
+    <h1>Хранилище</h1>
+    <p>Наблюдайте за слоями данных, запускайте архивацию и создавайте резервные копии.</p>
+  </div>
+  <span class="heading-meta">DUCKDB / PARQUET</span>
+</section>
+
+<div class="two-column storage-upper">
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">ОБЪЁМ ДАННЫХ</div><h2>Слои хранения</h2></div>
+      <span class="pill neutral">{{ '{:,.0f}'.format((usage.hot + usage.warm + usage.cold) / (1024 * 1024)) }} MB</span>
+    </div>
+    <div class="storage-visual">
+      <div class="storage-column hot"><span>{{ '{:.1f}'.format(usage.hot / 1024**2) }} MB</span><div></div><small>HOT · ФАЙЛ БД</small></div>
+      <div class="storage-column warm"><span>{{ '{:.1f}'.format(usage.warm / 1024**2) }} MB</span><div></div><small>WARM · WAL</small></div>
+      <div class="storage-column cold"><span>{{ '{:.1f}'.format(usage.cold / 1024**2) }} MB</span><div></div><small>COLD · PARQUET</small></div>
+    </div>
+    <p class="panel-note">Физические объёмы: hot — файл DuckDB (включает hot и warm записи), warm — WAL. Разделить объём записей этих слоёв без миграции хранилища невозможно; здесь не выдаются оценки за факт.</p>
+    <div class="mini-table">
+      {% for table, count in sizes.items() %}<div><span>{{ table }}</span><strong>{{ count }}</strong></div>{% endfor %}
+    </div>
+  </section>
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">ЗАДАЧИ ХРАНИЛИЩА</div><h2>Обслуживание</h2></div>
+      <span class="pill neutral">ФОНОВОЕ</span>
+    </div>
+    <p class="panel-copy">Архивация и сжатие запускаются в фоне, не блокируя другие экраны.</p>
+    <div class="maintenance-actions">
+      <button class="button primary" hx-post="/admin/storage/archive" hx-target="#storage-jobs">↓ Архивировать сейчас</button>
+      <button class="button secondary" hx-post="/admin/storage/compact" hx-target="#storage-jobs">↻ Пересжать cold-архив</button>
+      <button class="button secondary" hx-post="/admin/storage/backup" hx-target="#storage-jobs">▤ Создать бэкап</button>
+    </div>
+    <div id="storage-jobs" hx-get="/admin/storage/jobs" hx-trigger="db-jobs-updated from:body" hx-swap="innerHTML">{% include 'partials/storage_jobs.html' %}</div>
+  </section>
+</div>
+
+<section class="panel sql-panel">
+  <div class="panel-head">
+    <div><div class="eyebrow">READ-ONLY SQL / ОДИН ЗАПРОС</div><h2>SQL-консоль</h2></div>
+    <span class="pill warning">SELECT / WITH · LIMIT 1000</span>
+  </div>
+  <p class="panel-copy">Только локальные публичные таблицы. Мутации, внешние функции и доступ к данным счёта запрещены и на сервере.</p>
+  <form id="sql-form" hx-post="/admin/storage/sql" hx-target="#sql-result" class="sql-form">
+    <label class="sr-only" for="sql-input">SQL запрос</label>
+    <textarea id="sql-input" name="query" spellcheck="false" placeholder="SELECT * FROM trades LIMIT 20">SELECT * FROM trades LIMIT 20</textarea>
+    <div class="sql-toolbar"><small>Ctrl + Enter — выполнить · до 1000 строк</small><button type="submit" class="button primary">▶ Выполнить запрос</button></div>
+  </form>
+  <div id="sql-result" class="sql-result"><p class="empty-subtle">Выполните SELECT, чтобы увидеть результат. История: {{ sql_history|length }} / 20.</p></div>
+  {% if sql_history %}
+  <details class="sql-history">
+    <summary>История последних запросов</summary>
+    {% for query in sql_history %}<button type="button" class="history-item" data-sql-history="{{ query }}">{{ query }}</button>{% endfor %}
+  </details>
+  {% endif %}
+</section>
+
+<div class="two-column storage-lower">
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">РЕСУРСЫ / RETENTION</div><h2>Политика хранения</h2></div>
+    </div>
+    <div id="storage-settings">{% include 'partials/storage_settings.html' %}</div>
+    <form hx-post="/admin/storage/memory" hx-target="#storage-settings" class="compact-form">
+      <label>Лимит памяти DuckDB (MB)<input type="number" name="limit_mb" min="128" max="16384" value="{{ memory_limit_mb }}" required></label>
+      <label class="checkbox-label"><input type="checkbox" name="confirmed_warning" value="true"> Подтверждаю, если больше 50% RAM компьютера</label>
+      <button class="button secondary" type="submit">Применить лимит</button>
+    </form>
+    <div class="separator"></div>
+    <div id="retention-status"></div>
+    <form hx-post="/admin/storage/retention" hx-target="#retention-status" class="compact-form">
+      <div class="form-row">
+        <label>Hot, дней<input type="number" name="hot_days" value="{{ hot_days }}" min="1" max="3649" required></label>
+        <label>Warm, дней<input type="number" name="warm_days" value="{{ warm_days }}" min="2" max="3650" required></label>
+        <label>Порог диска, %<input type="number" name="disk_threshold_pct" value="{{ disk_threshold_pct }}" min="50" max="95" required></label>
+      </div>
+      <button class="button secondary" type="submit">Сохранить политику</button>
+    </form>
+  </section>
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">ВОССТАНОВЛЕНИЕ</div><h2>Резервные копии</h2></div>
+      <span class="pill danger">STOPPED ONLY</span>
+    </div>
+    <p class="panel-copy">Восстановление заменит содержимое торговых таблиц. Аудит и выбранный счёт сохраняются. Требуется полная остановка бота и ручной рестарт GUI.</p>
+    <div id="backup-list" hx-get="/admin/storage/backups" hx-trigger="db-jobs-updated from:body" hx-swap="innerHTML">{% include 'partials/backup_list.html' %}</div>
+  </section>
+</div>
+{% endblock %}

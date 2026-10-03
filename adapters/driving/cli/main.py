@@ -4,12 +4,15 @@
 * ``run`` — запуск торгового цикла в заданном контуре;
 * ``secrets set-token`` — положить токен в системное хранилище ОС;
 * ``db bootstrap`` — первичное заполнение БД;
-* ``db stats`` — статистика хранилища.
+* ``db stats`` — статистика хранилища;
+* ``catalog refresh`` — обновить справочник инструментов из API.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
@@ -51,7 +54,8 @@ async def _bootstrap() -> None:
 
     settings = load_settings()
     configure_logging(settings.log_level.value, json_logs=settings.log_json)
-    context = await build_context(settings)
+    # Bootstrap/init must never open a sandbox account or touch a live account.
+    context = await build_context(settings, mode=ExecutionMode.BACKTEST)
     try:
         config = await bootstrap_database(context)
         typer.echo(f"БД инициализирована. Конфиг версии {config.version}.")
@@ -83,40 +87,255 @@ async def _stats() -> None:
         await context.aclose()
 
 
+@app_cli.command("catalog-refresh")
+def catalog_refresh(
+    types: str = typer.Option(
+        "",
+        help="Типы инструментов через запятую: share, etf, currency, futures, bond",
+    ),
+) -> None:
+    """Загружает справочник инструментов из API и сохраняет его в БД."""
+    asyncio.run(_catalog_refresh(types))
+
+
+async def _catalog_refresh(types: str) -> None:
+    from application.composition import build_context, load_saved_execution_mode
+    from application.use_cases.manage_instrument_catalog import (
+        catalog_status,
+        refresh_instrument_catalog,
+    )
+
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    resolved_mode = await load_saved_execution_mode(settings)
+    if resolved_mode is ExecutionMode.LIVE:
+        typer.confirm("Каталог будет загружен из БОЕВОГО контура. Продолжить?", abort=True)
+    requested = [item.strip().lower() for item in types.split(",") if item.strip()]
+
+    context = await build_context(settings, mode=resolved_mode)
+    try:
+        result = await refresh_instrument_catalog(context, instrument_types=requested or None)
+        status = await catalog_status(context)
+        typer.echo(
+            f"Каталог обновлён: {result.fetched} инструментов "
+            f"({', '.join(result.types)}); всего в БД: {status['count']}"
+        )
+    finally:
+        await context.aclose()
+
+
+@db_app.command("doctor")
+def db_doctor(
+    repair: bool = typer.Option(
+        False, "--repair", help="Закрыть открытые планы без инструмента в корзине"
+    ),
+) -> None:
+    """Проверяет согласованность инструментов, каталога и торговых планов."""
+    asyncio.run(_doctor(repair))
+
+
+async def _doctor(repair: bool) -> None:
+    from application.composition import build_context
+    from application.use_cases.manage_instrument_catalog import catalog_status
+    from application.use_cases.reconcile_trade_plans import (
+        reconcile_orphaned_trade_plans,
+        suspicious_instruments,
+    )
+
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    # Диагностика read-only по хранилищу: контур backtest не открывает счетов.
+    context = await build_context(settings, mode=ExecutionMode.BACKTEST)
+    try:
+        problems = 0
+        for instrument in suspicious_instruments(list(context.instruments)):
+            problems += 1
+            typer.echo(
+                f"! инструмент {instrument.ticker}: uid '{instrument.uid}' не похож на "
+                "instrument_uid (UUID). Добавьте инструмент заново по тикеру."
+            )
+        status = await catalog_status(context)
+        typer.echo(
+            f"Каталог инструментов: {status['count']} записей, "
+            f"обновлён {status['updated_at'] or 'никогда'}"
+            f"{' (устарел)' if status['stale'] else ''}"
+        )
+        if repair:
+            closed = await reconcile_orphaned_trade_plans(context)
+            problems += len(closed)
+            typer.echo(f"Закрыто открытых планов без инструмента: {len(closed)}")
+        else:
+            orphans = await context.repository.list_orphaned_trade_plan_ids()
+            problems += len(orphans)
+            typer.echo(
+                f"Открытых планов без инструмента в корзине: {len(orphans)} "
+                "(закройте их: redbot db doctor --repair)"
+            )
+        if problems == 0:
+            typer.echo("Замечаний нет: инструменты, каталог и планы согласованы.")
+        else:
+            typer.echo(f"Всего замечаний: {problems}")
+    finally:
+        await context.aclose()
+
+
+@app_cli.command("backtest")
+def cli_backtest(
+    ticker: str = typer.Option("SBER", help="Тикер инструмента"),
+    timeframe: str = typer.Option("1h", help="Рабочий таймфрейм: 5m, 15m, 1h, 4h, 1d"),
+    bars: int = typer.Option(96, help="Количество баров для оценки"),
+    horizon: int = typer.Option(8, help="Горизонт тройного барьера H"),
+) -> None:
+    """Запускает вероятностный бэктест и валидацию «Синтетического трейдера»."""
+    asyncio.run(_cli_backtest(ticker, timeframe, bars, horizon))
+
+
+async def _cli_backtest(ticker: str, timeframe: str, bars: int, horizon: int) -> None:
+    from application.composition import build_context
+    from application.use_cases.run_backtest import (
+        BacktestRunParameters,
+        run_synthetic_backtest,
+    )
+
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    context = await build_context(settings, mode=ExecutionMode.BACKTEST)
+    try:
+        params = BacktestRunParameters(
+            instrument_uid=f"uid-{ticker.lower()}",
+            ticker=ticker.upper(),
+            timeframe=timeframe,
+            bar_count=bars,
+            horizon_bars=horizon,
+        )
+        report = await run_synthetic_backtest(context, params)
+        typer.echo(
+            f"[Синтетический трейдер] {report.ticker} ({report.timeframe}): "
+            f"Return={report.total_return_pct}% | MaxDD={report.max_drawdown_pct}% | "
+            f"OOS Sharpe={report.oos_sharpe_ratio:.2f} | "
+            f"P(trend)={report.latest_triad.p_trend:.2f} | "
+            f"P(up|trend)={report.latest_triad.p_up_given_trend:.2f} | "
+            f"P(break<=H)={report.latest_triad.p_break_within_h:.2f} | "
+            f"PBO={report.overfitting_audit.pbo_probability:.2f} | "
+            f"DSR={report.overfitting_audit.deflated_sharpe_ratio:.2f}"
+        )
+    finally:
+        await context.aclose()
+
+
+@app_cli.command("history-backfill")
+def cli_history_backfill(
+    instrument_id: str = typer.Option(..., help="UID или FIGI инструмента в T-Invest"),
+    years: str = typer.Option("2022,2023,2024,2025", help="Годы через запятую (7–10 лет истории)"),
+) -> None:
+    """Скачивает годовые ZIP-архивы 1m-свечей T-Invest и агрегирует иерархию 5m/15m/1h/4h/1d."""
+    year_list = [int(y.strip()) for y in years.split(",") if y.strip().isdecimal()]
+    asyncio.run(_cli_history_backfill(instrument_id, year_list))
+
+
+async def _cli_history_backfill(instrument_id: str, years: list[int]) -> None:
+    from adapters.driven.tbank.history_loader import TInvestHistoryArchiveLoader
+
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    token = settings.tbank.api_token.get_secret_value()
+    loader = TInvestHistoryArchiveLoader(token)
+    _hierarchy, summary = await loader.backfill_multi_year_hierarchy(instrument_id, years)
+    typer.echo(
+        f"[History Backfill] instrument_id={summary.instrument_id} | "
+        f"years={summary.years_loaded} | 1m bars={summary.minute_bars_loaded} | "
+        f"resampled={summary.resampled_counts}"
+    )
+
+
 @app_cli.command("run")
 def run(
-    mode: str = typer.Option("sandbox", help="Контур: live | sandbox | backtest"),
+    mode: str | None = typer.Option(
+        None, help="Контур: live | sandbox | backtest (по умолчанию сохранённый)"
+    ),
+    account: str = typer.Option("auto", help="Счёт: auto или явный account ID"),
     host: str = typer.Option("", help="Хост Web GUI (по умолчанию из настроек)"),
     port: int = typer.Option(0, help="Порт Web GUI (по умолчанию из настроек)"),
     *,
     with_gui: bool = typer.Option(True, help="Поднять Web GUI"),
 ) -> None:
     """Запускает торговый цикл (и GUI, если не отключён)."""
-    asyncio.run(_run(mode, host or None, port or None, with_gui=with_gui))
+    asyncio.run(_run(mode, account, host or None, port or None, with_gui=with_gui))
 
 
-async def _run(mode: str, host: str | None, port: int | None, *, with_gui: bool) -> None:
+def _parse_account_choice(choice: str, accounts: Sequence[dict[str, Any]]) -> str:
+    """Принимает показанный номер счёта или его полный ID."""
+    choice = choice.strip()
+    for account_item in accounts:
+        account_id = str(account_item["id"])
+        if choice == account_id:
+            return account_id
+
+    if choice.isdecimal():
+        index = int(choice)
+        if 1 <= index <= len(accounts):
+            return str(accounts[index - 1]["id"])
+    raise ValueError("Введите номер счёта из списка или его полный ID")
+
+
+def _prompt_for_account(accounts: Sequence[dict[str, Any]]) -> str:
+    from application.use_cases.select_account import ACCOUNT_TYPE_LABELS
+
+    typer.echo("Найдено несколько открытых счетов равного приоритета:")
+    for index, account_item in enumerate(accounts, start=1):
+        account_type = int(account_item.get("type", 0))
+        label = ACCOUNT_TYPE_LABELS.get(account_type, "Другой")
+        typer.echo(
+            f"  {index}. {account_item.get('name') or 'Без названия'} — "
+            f"{label}; ID: {account_item['id']}"
+        )
+    if not sys.stdin.isatty():
+        raise typer.BadParameter(
+            "Выбор счёта требует интерактивного терминала; повторите запуск с --account <ID>"
+        )
+
+    while True:
+        choice = typer.prompt("Введите номер счёта из списка или его полный ID")
+        try:
+            return _parse_account_choice(choice, accounts)
+        except ValueError as exc:
+            typer.echo(str(exc))
+
+
+async def _run(
+    mode: str | None,
+    account: str,
+    host: str | None,
+    port: int | None,
+    *,
+    with_gui: bool,
+) -> None:
     import uvicorn
 
     from adapters.driving.web.app import create_app
-    from application.composition import build_context
+    from application.composition import build_context, load_saved_execution_mode
 
-    resolved_mode = ExecutionMode(mode)
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    resolved_mode = ExecutionMode(mode) if mode else await load_saved_execution_mode(settings)
     if resolved_mode is ExecutionMode.LIVE:
         typer.confirm(
             "Вы запускаете бота в БОЕВОМ контуре на реальные деньги. Продолжить?",
             abort=True,
         )
 
-    settings = load_settings()
-    configure_logging(settings.log_level.value, json_logs=settings.log_json)
-
-    context = await build_context(settings, mode=resolved_mode)
+    context = await build_context(
+        settings,
+        mode=resolved_mode,
+        requested_account_id=None if account.strip().lower() == "auto" else account.strip(),
+        account_selector=_prompt_for_account,
+        remember_mode=True,
+    )
     settings.web.host = host or settings.web.host
     settings.web.port = port or settings.web.port
 
     scheduler = _build_scheduler(context)
-    server: Any = None
+    context.scheduler = scheduler
 
     try:
         if with_gui:
@@ -128,29 +347,39 @@ async def _run(mode: str, host: str | None, port: int | None, *, with_gui: bool)
                 log_level=settings.log_level.value,
             )
             server = uvicorn.Server(config)
-            await asyncio.gather(server.serve(), scheduler.run())
+            context.scheduler_task = asyncio.create_task(scheduler.run(), name="bot-scheduler")
+            await server.serve()
         else:
             await scheduler.run()
     finally:
         scheduler.stop()
+        if context.scheduler_task is not None:
+            await context.scheduler_task
         await context.aclose()
 
 
 def _build_scheduler(context: Any) -> Any:
     from application.scheduler import Scheduler, TaskSpec
-    from application.use_cases.make_decision import make_decision
     from application.use_cases.monitor_positions import monitor_positions
+    from application.use_cases.run_decision_cycle import run_decision_cycle
 
     async def decision_cycle() -> None:
-        for instrument in context.tradable_instruments:
-            await make_decision(context, instrument)
+        # Анализ каждой бумаги изолирован, ENTER исполняется через execute_plan;
+        # итог остаётся в context.decision_scan_report и виден в GUI.
+        await run_decision_cycle(context)
 
     async def monitor_cycle() -> None:
         await monitor_positions(context)
 
+    async def catalog_cycle() -> None:
+        from application.use_cases.manage_instrument_catalog import ensure_catalog_fresh
+
+        await ensure_catalog_fresh(context)
+
     scheduler = Scheduler()
     scheduler.add(TaskSpec(name="decisions", cycle=decision_cycle, interval_seconds=300))
-    scheduler.add(TaskSpec(name="monitor", cycle=monitor_cycle, interval_seconds=60))
+    scheduler.add(TaskSpec(name="position_monitor", cycle=monitor_cycle, interval_seconds=60))
+    scheduler.add(TaskSpec(name="catalog_refresh", cycle=catalog_cycle, interval_seconds=21600))
     return scheduler
 
 

@@ -10,26 +10,30 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from core.domain.catalog import DEFAULT_CATALOG_TYPES
 from core.domain.entities import (
     Instrument,
     OrderResult,
     OrderState,
+    PortfolioState,
     Position,
     StrategyConfig,
     TradePlan,
 )
-from core.domain.enums import OrderStatus, Timeframe
-from core.domain.value_objects import OHLCV, OrderbookSnapshot
+from core.domain.enums import OrderStatus, Timeframe, TradePlanStatus
+from core.domain.value_objects import OHLCV, CandleSeries, OrderbookSnapshot
 from core.journal.hypothesis_engine import Hypothesis
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
 from core.journal.trade_review import TradeReview
 from core.ports.clock import FrozenClock
+from core.ports.persistence import DecisionRecord, GuiAuditEntry, WsReplayEvent
 
 ZERO = Decimal("0")
 
@@ -42,16 +46,25 @@ class FakeMarketData:
         candles: dict[tuple[str, Timeframe], Sequence[OHLCV]] | None = None,
         *,
         instruments: dict[tuple[str, str], Instrument] | None = None,
+        catalog: Sequence[Any] | None = None,
         orderbook: OrderbookSnapshot | None = None,
-        indicators: dict[tuple[str, str, Timeframe], dict[str, float | None]] | None = None,
+        indicators: dict[tuple[str, str, Timeframe], dict[str, Decimal | None]] | None = None,
         raise_on_orderbook: bool = False,
     ) -> None:
         self._candles = candles or {}
         self._instruments = instruments or {}
+        self._catalog: dict[str, Any] = {entry.uid: entry for entry in (catalog or ())}
         self._orderbook = orderbook
         self._indicators = indicators or {}
         self._raise_on_orderbook = raise_on_orderbook
         self.calls: list[str] = []
+
+    def set_catalog(self, catalog: Sequence[Any]) -> None:
+        """Задаёт справочник инструментов: эмуляция ответа InstrumentsService."""
+        self._catalog = {entry.uid: entry for entry in catalog}
+        self._instruments = {
+            (entry.ticker, entry.class_code): entry.to_instrument() for entry in catalog
+        }
 
     async def get_candles(
         self,
@@ -85,15 +98,47 @@ class FakeMarketData:
         indicator: str,
         timeframe: Timeframe,
         params: Mapping[str, Any],
-    ) -> dict[str, float | None]:
-        return self._indicators.get((instrument.uid, indicator, timeframe), {})
+    ) -> dict[str, Decimal | None]:
+        values = self._indicators.get((instrument.uid, indicator, timeframe), {})
+        return {
+            name: Decimal(str(value)) if value is not None else None
+            for name, value in values.items()
+        }
 
     async def resolve_instrument(self, ticker: str, class_code: str) -> Instrument:
         key = (ticker, class_code)
-        if key not in self._instruments:
-            msg = f"Инструмент {ticker}.{class_code} не найден"
-            raise ValueError(msg)
-        return self._instruments[key]
+        if key in self._instruments:
+            return self._instruments[key]
+        for entry in self._catalog.values():
+            if entry.ticker == ticker and (not class_code or entry.class_code == class_code):
+                return entry.to_instrument()
+        msg = f"Инструмент {ticker}.{class_code} не найден"
+        raise ValueError(msg)
+
+    async def fetch_catalog(self, instrument_types: Any = None) -> list[Any]:
+        """Эмуляция InstrumentsService: отдаёт записи только запрошенных типов."""
+        requested = [item.strip().lower() for item in (instrument_types or ()) if item.strip()]
+        if not requested:
+            requested = list(DEFAULT_CATALOG_TYPES)
+        self.calls.append(f"fetch_catalog:{','.join(requested)}")
+        allowed = set(requested)
+        return [entry for entry in self._catalog.values() if entry.instrument_type in allowed]
+
+    async def search_instruments(
+        self,
+        query: str,
+        *,
+        instrument_type: str | None = None,
+        limit: int = 20,
+    ) -> list[Any]:
+        self.calls.append(f"search_instruments:{query}")
+        needle = query.strip().lower()
+        return [
+            entry
+            for entry in self._catalog.values()
+            if entry.matches(needle)
+            and (instrument_type is None or entry.instrument_type == instrument_type)
+        ][: max(limit, 1)]
 
     async def aclose(self) -> None:
         self.calls.clear()
@@ -109,6 +154,59 @@ class FakeBroker:
         self.closed: list[tuple[Position, str]] = []
         self.positions: list[Position] = []
         self._counter = 0
+        self._balance = Decimal("1000000")
+        self._accounts: list[dict[str, Any]] = [
+            {
+                "id": account_id,
+                "name": "Основной счёт в песочнице",
+                "status": 2,
+                "type": 1,
+                "is_current": True,
+            }
+        ]
+        if account_id != "test-account":
+            self._accounts.append(
+                {
+                    "id": "test-account",
+                    "name": "Тестовый счёт песочницы",
+                    "status": 2,
+                    "type": 1,
+                    "is_current": False,
+                }
+            )
+
+    async def get_portfolio(self) -> PortfolioState | None:
+        return PortfolioState(
+            account_id=self.account_id,
+            total_value=self._balance,
+            available_cash=self._balance,
+            positions_value=Decimal("0"),
+            updated_at=datetime.now(tz=UTC),
+        )
+
+    async def get_sandbox_accounts(self) -> list[dict[str, Any]]:
+        for acc in self._accounts:
+            acc["is_current"] = acc["id"] == self.account_id
+        return list(self._accounts)
+
+    async def get_accounts(self) -> list[dict[str, Any]]:
+        return await self.get_sandbox_accounts()
+
+    async def open_sandbox_account(self, name: str = "Счёт в песочнице") -> str:
+        new_id = f"fake-sandbox-{len(self._accounts) + 1:02d}"
+        self._accounts.append(
+            {"id": new_id, "name": name, "status": 2, "type": 1, "is_current": False}
+        )
+        return new_id
+
+    async def close_sandbox_account(self, account_id: str) -> None:
+        self._accounts = [a for a in self._accounts if a["id"] != account_id]
+
+    async def sandbox_pay_in(
+        self, account_id: str, amount: Decimal, currency: str = "rub"
+    ) -> Decimal:
+        self._balance += amount
+        return self._balance
 
     async def place_order(self, plan: TradePlan, quantity: int) -> OrderResult:
         self._counter += 1
@@ -171,7 +269,12 @@ class InMemoryRepository:
         self.hypotheses: dict[UUID, Hypothesis] = {}
         self.configs: dict[int, StrategyConfig] = {}
         self.instruments: dict[str, Instrument] = {}
+        self.catalog: dict[str, Any] = {}
         self.portfolio_states: list[str] = []
+        self.gui_audit: list[GuiAuditEntry] = []
+        self.operational_values: dict[str, str] = {}
+        self.ws_events: list[WsReplayEvent] = []
+        self.candles_store: dict[tuple[str, str], list[OHLCV]] = {}
 
     async def save_market_snapshot(self, snapshot: MarketSnapshot) -> UUID:
         self.market_snapshots[snapshot.id] = snapshot
@@ -188,14 +291,68 @@ class InMemoryRepository:
         for snapshot in snapshots:
             await self.save_decision_snapshot(snapshot)
 
+    def _decision_record(self, item: DecisionSnapshot) -> DecisionRecord:
+        return DecisionRecord(
+            instrument_uid=self.market_snapshots[item.market_snapshot_id].instrument_uid
+            if item.market_snapshot_id in self.market_snapshots
+            else "",
+            snapshot=item,
+        )
+
+    async def list_recent_decisions(self, limit: int = 50) -> list[DecisionRecord]:
+        return [
+            self._decision_record(item)
+            for item in sorted(
+                self.decision_snapshots.values(),
+                key=lambda decision: decision.created_at,
+                reverse=True,
+            )[:limit]
+        ]
+
+    async def list_decisions_since(self, since: datetime) -> list[DecisionRecord]:
+        return [
+            self._decision_record(item)
+            for item in sorted(
+                self.decision_snapshots.values(),
+                key=lambda decision: decision.created_at,
+                reverse=True,
+            )
+            if item.created_at >= since
+        ]
+
     async def save_trade_plan(self, plan: TradePlan) -> None:
         self.plans[plan.id] = plan
 
     async def get_trade_plan(self, plan_id: UUID) -> TradePlan | None:
-        return self.plans.get(plan_id)
+        plan = self.plans.get(plan_id)
+        # Как и в DuckDB: без инструмента в корзине план не материализуется.
+        if plan is None or plan.instrument.uid not in self.instruments:
+            return None
+        return plan
 
     async def get_open_trade_plans(self) -> list[TradePlan]:
-        return [p for p in self.plans.values() if p.is_open]
+        # Как и в DuckDB: план без инструмента в корзине пропускаем, а не роняем
+        # читателя — «сирота» не должна ломать мониторинг и дашборд.
+        return [
+            p for p in self.plans.values() if p.is_open and p.instrument.uid in self.instruments
+        ]
+
+    async def close_orphaned_trade_plans(self, reason: str) -> tuple[str, ...]:
+        closed: list[str] = []
+        for plan in self.plans.values():
+            if not plan.is_open or plan.instrument.uid in self.instruments:
+                continue
+            plan.close(TradePlanStatus.CLOSED_MANUAL, closed_at=datetime.now(UTC))
+            plan.rejection_reason = reason
+            closed.append(str(plan.id))
+        return tuple(closed)
+
+    async def list_orphaned_trade_plan_ids(self) -> tuple[str, ...]:
+        return tuple(
+            str(plan.id)
+            for plan in self.plans.values()
+            if plan.is_open and plan.instrument.uid not in self.instruments
+        )
 
     async def get_trade_history(
         self, instrument: Instrument | None, since: datetime
@@ -226,11 +383,85 @@ class InMemoryRepository:
     async def save_instrument(self, instrument: Instrument) -> None:
         self.instruments[instrument.uid] = instrument
 
+    async def delete_instrument(self, uid: str) -> None:
+        self.instruments.pop(uid, None)
+
     async def list_instruments(self) -> list[Instrument]:
         return list(self.instruments.values())
 
+    # ------------------------------------------------------------- каталог
+    async def save_catalog_entries(self, entries: Sequence[Any]) -> None:
+        # Момент сохранения проставляет хранилище — как и в DuckDB-версии.
+        stamp = datetime.now(tz=UTC)
+        for entry in entries:
+            self.catalog[entry.uid] = replace(entry, updated_at=stamp)
+
+    async def delete_catalog_entries(self, instrument_types: Sequence[str]) -> None:
+        for uid, entry in list(self.catalog.items()):
+            if entry.instrument_type in set(instrument_types):
+                self.catalog.pop(uid, None)
+
+    async def list_catalog_entries(
+        self,
+        *,
+        query: str | None = None,
+        instrument_types: Sequence[str] | None = None,
+        tradable_only: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[Any]:
+        items = list(self.catalog.values())
+        if query:
+            items = [entry for entry in items if entry.matches(query)]
+        if instrument_types:
+            allowed = set(instrument_types)
+            items = [entry for entry in items if entry.instrument_type in allowed]
+        if tradable_only:
+            items = [entry for entry in items if entry.tradable]
+        items.sort(
+            key=lambda entry: (
+                not entry.api_trade_available,
+                not entry.liquidity,
+                entry.ticker,
+            )
+        )
+        return items[offset : offset + max(limit, 1)]
+
+    async def get_catalog_entry(self, uid: str) -> Any:
+        return self.catalog.get(uid)
+
+    async def find_catalog_entry(self, ticker: str, class_code: str | None = None) -> Any:
+        symbol = ticker.strip().upper()
+        for entry in self.catalog.values():
+            if entry.ticker.upper() != symbol:
+                continue
+            if class_code and entry.class_code.upper() != class_code.strip().upper():
+                continue
+            return entry
+        return None
+
+    async def count_catalog_entries(self, instrument_types: Sequence[str] | None = None) -> int:
+        if not instrument_types:
+            return len(self.catalog)
+        allowed = set(instrument_types)
+        return sum(1 for entry in self.catalog.values() if entry.instrument_type in allowed)
+
     async def save_portfolio_state(self, state_json: str) -> None:
         self.portfolio_states.append(state_json)
+
+    async def get_latest_portfolio_state(self) -> PortfolioState | None:
+        if not self.portfolio_states:
+            return None
+        import json
+
+        payload = json.loads(self.portfolio_states[-1])
+        return PortfolioState(
+            account_id=payload["account_id"],
+            total_value=Decimal(payload["total_value"]),
+            available_cash=Decimal(payload["available_cash"]),
+            positions_value=Decimal(payload["positions_value"]),
+            updated_at=datetime.fromisoformat(payload["updated_at"]),
+        )
 
     async def execute_readonly(
         self, sql: str, params: Sequence[Any] | None = None
@@ -238,9 +469,82 @@ class InMemoryRepository:
         msg = "SQL-консоль требует DuckDB-репозиторий: фейк SQL не исполняет"
         raise NotImplementedError(msg)
 
+    async def read_query(self, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+        raise NotImplementedError("SQL-консоль требует DuckDB")
+
+    async def append_gui_audit(self, entry: GuiAuditEntry) -> None:
+        self.gui_audit.append(entry)
+
+    async def list_gui_audit(
+        self,
+        *,
+        section: str | None = None,
+        action: str | None = None,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[GuiAuditEntry]:
+        entries = [
+            entry
+            for entry in self.gui_audit
+            if (section is None or entry.section == section)
+            and (action is None or entry.action == action)
+            and (since is None or entry.ts >= since)
+        ]
+        return list(reversed(entries))[:limit]
+
+    async def get_operational_value(self, key: str) -> str | None:
+        return self.operational_values.get(key)
+
+    async def set_operational_value(self, key: str, value: str) -> None:
+        self.operational_values[key] = value
+
+    async def append_ws_event(self, entry: WsReplayEvent) -> None:
+        self.ws_events.append(entry)
+
+    async def list_ws_events(
+        self, channel: str, since_seq: int, limit: int = 1000
+    ) -> list[WsReplayEvent]:
+        return [
+            entry for entry in self.ws_events if entry.channel == channel and entry.seq > since_seq
+        ][:limit]
+
+    async def last_ws_seq(self, channel: str) -> int:
+        return max((entry.seq for entry in self.ws_events if entry.channel == channel), default=0)
+
+    async def set_memory_limit_mb(self, limit_mb: int) -> None:
+        self.operational_values["duckdb_memory_limit_mb"] = str(limit_mb)
+
+    async def memory_used_bytes(self) -> int | None:
+        return None
+
+    async def save_candles(self, series: CandleSeries, instrument_uid: str) -> int:
+        key = (instrument_uid, series.timeframe.value)
+        existing = {c.timestamp: c for c in self.candles_store.get(key, [])}
+        for c in series.candles:
+            existing[c.timestamp] = c
+        self.candles_store[key] = [existing[ts] for ts in sorted(existing)]
+        return len(series.candles)
+
+    async def get_candles(
+        self,
+        instrument_uid: str,
+        timeframe: Timeframe,
+        since: datetime,
+        until: datetime,
+    ) -> CandleSeries:
+        key = (instrument_uid, timeframe.value)
+        bars = [
+            c
+            for c in self.candles_store.get(key, [])
+            if since <= c.timestamp <= until
+        ]
+        return CandleSeries(timeframe=timeframe, candles=tuple(bars))
+
     async def table_sizes(self) -> dict[str, int]:
         return {
-            "candles": 0,
+            "instruments": len(self.instruments),
+            "instrument_catalog": len(self.catalog),
+            "candles": sum(len(v) for v in self.candles_store.values()),
             "market_snapshots": len(self.market_snapshots),
             "decision_snapshots": len(self.decision_snapshots),
             "orderbook_snapshots": 0,
@@ -251,6 +555,7 @@ class InMemoryRepository:
     async def aclose(self) -> None:
         self.market_snapshots.clear()
         self.plans.clear()
+        self.catalog.clear()
 
 
 class FakeArchive:
@@ -386,4 +691,34 @@ def make_instrument(
         ticker=ticker,
         lot_size=lot_size,
         is_benchmark=is_benchmark,
+    )
+
+
+def make_catalog_entry(
+    *,
+    uid: str = "uid-sber",
+    ticker: str = "SBER",
+    name: str = "Сбербанк",
+    class_code: str = "TQBR",
+    lot_size: int = 10,
+    instrument_type: str = "share",
+    currency: str = "RUB",
+    isin: str = "",
+    liquidity: bool = True,
+    api_trade_available: bool = True,
+) -> Any:
+    """Запись каталога, какая приходит из InstrumentsService."""
+    from core.domain.catalog import InstrumentCatalogEntry
+
+    return InstrumentCatalogEntry(
+        uid=uid,
+        ticker=ticker,
+        class_code=class_code,
+        name=name,
+        lot_size=lot_size,
+        currency=currency,
+        instrument_type=instrument_type,
+        isin=isin,
+        liquidity=liquidity,
+        api_trade_available=api_trade_available,
     )

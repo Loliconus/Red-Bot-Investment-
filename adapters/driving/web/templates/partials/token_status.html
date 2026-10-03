@@ -1,0 +1,7 @@
+{% if message %}<div class="inline-alert success">{{ message }}</div>{% endif %}
+{% if error %}<div class="inline-alert danger">{{ error }}</div>{% endif %}
+<dl class="detail-list">
+  <div><dt>Источник</dt><dd>{{ token_meta.source }}</dd></div>
+  <div><dt>Последнее сохранение через GUI</dt><dd>{{ token_meta.updated_at or 'Нет данных' }}</dd></div>
+  <div><dt>Значение</dt><dd>Недоступно для просмотра</dd></div>
+</dl>

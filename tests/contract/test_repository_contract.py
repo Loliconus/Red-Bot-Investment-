@@ -34,6 +34,10 @@ def _instrument() -> Any:
     return make_instrument()
 
 
+def _instrument_with(uid: str, *, ticker: str = "GMKN") -> Any:
+    return make_instrument(uid=uid, ticker=ticker)
+
+
 def _plan(instrument: Any, *, status: TradePlanStatus = TradePlanStatus.ACTIVE) -> TradePlan:
     thesis = TradeThesis(
         reasoning_chain=(ReasoningStep(module="t", signal="s", weight=Decimal("1")),),
@@ -115,6 +119,93 @@ async def test_instrument_round_trip(repository: Any) -> None:
     assert any(i.uid == instrument.uid for i in loaded)
 
 
+def _catalog_entries() -> list[Any]:
+    from tests.fakes import make_catalog_entry
+
+    return [
+        make_catalog_entry(uid="uid-sber", ticker="SBER", name="Сбербанк", lot_size=10),
+        make_catalog_entry(uid="uid-vtbr", ticker="VTBR", name="Банк ВТБ", lot_size=10000),
+        make_catalog_entry(
+            uid="uid-usd",
+            ticker="USD000UTSTOM",
+            name="Доллар США",
+            class_code="CETS",
+            lot_size=1,
+            instrument_type="currency",
+            currency="USD",
+            liquidity=False,
+        ),
+    ]
+
+
+async def test_catalog_entries_round_trip(repository: Any) -> None:
+    await repository.save_catalog_entries(_catalog_entries())
+
+    saved = await repository.list_catalog_entries(limit=10)
+    assert {entry.ticker for entry in saved} == {"SBER", "VTBR", "USD000UTSTOM"}
+
+    sber = await repository.find_catalog_entry("SBER", "TQBR")
+    assert sber is not None
+    assert (sber.uid, sber.name, sber.lot_size, sber.currency) == (
+        "uid-sber",
+        "Сбербанк",
+        10,
+        "RUB",
+    )
+    assert sber.updated_at is not None
+    assert (await repository.get_catalog_entry("uid-vtbr")).lot_size == 10000
+
+
+async def test_catalog_requires_class_code_when_given(repository: Any) -> None:
+    await repository.save_catalog_entries(_catalog_entries())
+
+    assert await repository.find_catalog_entry("USD000UTSTOM", "CETS") is not None
+    assert await repository.find_catalog_entry("USD000UTSTOM", "TQBR") is None
+    assert await repository.find_catalog_entry("USD000UTSTOM") is not None
+
+
+async def test_catalog_search_matches_ticker_and_name(repository: Any) -> None:
+    await repository.save_catalog_entries(_catalog_entries())
+
+    by_ticker = await repository.list_catalog_entries(query="sber", limit=10)
+    by_name = await repository.list_catalog_entries(query="банк втб", limit=10)
+    by_type = await repository.list_catalog_entries(instrument_types=["currency"], limit=10)
+    tradable = await repository.list_catalog_entries(tradable_only=True, limit=10)
+
+    assert [entry.ticker for entry in by_ticker] == ["SBER"]
+    assert [entry.ticker for entry in by_name] == ["VTBR"]
+    assert [entry.ticker for entry in by_type] == ["USD000UTSTOM"]
+    assert {entry.ticker for entry in tradable} == {"SBER", "VTBR", "USD000UTSTOM"}
+    assert await repository.count_catalog_entries(["share"]) == 2
+    assert await repository.count_catalog_entries() == 3
+
+
+async def test_catalog_delete_removes_only_given_types(repository: Any) -> None:
+    await repository.save_catalog_entries(_catalog_entries())
+
+    await repository.delete_catalog_entries(["share"])
+
+    assert {entry.ticker for entry in await repository.list_catalog_entries(limit=10)} == {
+        "USD000UTSTOM"
+    }
+    assert await repository.count_catalog_entries(["share"]) == 0
+
+
+async def test_catalog_save_replaces_entry_by_uid(repository: Any) -> None:
+    from tests.fakes import make_catalog_entry
+
+    await repository.save_catalog_entries(_catalog_entries())
+    await repository.save_catalog_entries(
+        [make_catalog_entry(uid="uid-sber", ticker="SBER", name="Сбер Банк", lot_size=1)]
+    )
+
+    entries = await repository.list_catalog_entries(limit=10)
+    assert len(entries) == 3
+    sber = await repository.find_catalog_entry("SBER", "TQBR")
+    assert sber is not None
+    assert (sber.name, sber.lot_size) == ("Сбер Банк", 1)
+
+
 async def test_trade_plan_round_trip(repository: Any) -> None:
     instrument = _instrument()
     await repository.save_instrument(instrument)
@@ -140,6 +231,55 @@ async def test_open_plans_exclude_closed(repository: Any) -> None:
     open_ids = {p.id for p in await repository.get_open_trade_plans()}
     assert opened.id in open_ids
     assert closed.id not in open_ids
+
+
+async def test_open_plans_skip_instrument_removed_from_basket(repository: Any) -> None:
+    """План без инструмента не роняет чтение: он просто пропускается.
+
+    Регресс на падение мониторинга позиций и дашборда: план со старым FIGI
+    вместо ``instrument_uid`` ломал ``get_open_trade_plans`` ValueError.
+    """
+    kept = _instrument()
+    removed = _instrument_with("uid-gmkn")
+    await repository.save_instrument(kept)
+    await repository.save_instrument(removed)
+    healthy = _plan(kept)
+    orphaned = _plan(removed)
+    await repository.save_trade_plan(healthy)
+    await repository.save_trade_plan(orphaned)
+    await repository.delete_instrument(removed.uid)
+
+    assert [p.id for p in await repository.get_open_trade_plans()] == [healthy.id]
+    assert await repository.get_trade_plan(orphaned.id) is None
+
+
+async def test_orphaned_plans_are_listed_and_closed_with_reason(repository: Any) -> None:
+    instrument = _instrument()
+    await repository.save_instrument(instrument)
+    healthy = _plan(instrument)
+    orphaned = _plan(_instrument_with("BBG004731489"))
+    already_closed = _plan(_instrument_with("BBG004730N88"), status=TradePlanStatus.CLOSED_TARGET)
+    for plan in (healthy, orphaned, already_closed):
+        await repository.save_trade_plan(plan)
+
+    assert await repository.list_orphaned_trade_plan_ids() == (str(orphaned.id),)
+
+    closed = await repository.close_orphaned_trade_plans("инструмент отсутствует в корзине")
+
+    assert closed == (str(orphaned.id),)
+    assert await repository.list_orphaned_trade_plan_ids() == ()
+    assert healthy.id in {p.id for p in await repository.get_open_trade_plans()}
+    assert already_closed.status is TradePlanStatus.CLOSED_TARGET
+    assert already_closed.rejection_reason is None
+
+    # Причина и момент закрытия сохранены: план снова читается, как только
+    # инструмент возвращается в корзину.
+    await repository.save_instrument(orphaned.instrument)
+    restored = await repository.get_trade_plan(orphaned.id)
+    assert restored is not None
+    assert restored.status is TradePlanStatus.CLOSED_MANUAL
+    assert restored.rejection_reason == "инструмент отсутствует в корзине"
+    assert restored.closed_at is not None
 
 
 async def test_market_snapshot_round_trip(repository: Any) -> None:

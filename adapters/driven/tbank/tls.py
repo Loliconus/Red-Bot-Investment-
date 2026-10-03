@@ -1,16 +1,12 @@
-"""TLS: доверие к российским корневым сертификатам.
+"""TLS для T-Invest SDK.
 
-T-Invest API отдаёт сертификаты НУЦ Минцифры РФ, которых нет в стандартных
-хранилищах доверия Python и ОС. Правильное решение — **расширить доверие**,
-а не отключить проверку: ``verify=False`` превращает MITM в реальную угрозу и
-недопустим в боевом контуре.
+SDK сам создает gRPC credentials и не принимает ``channel_credentials`` от
+приложения. Поддерживаемая настройка — ``SSL_TBANK_VERIFY=True``: SDK берет
+корневой сертификат НУЦ Минцифры РФ из собственного пакета. Проверка TLS
+всегда включена; адаптеры T-Invest не создают клиент gRPC самостоятельно.
 
-Схема:
-* если найден PEM-бандл из ``config/certs`` — строим доверие на нём
-  (плюс системные корни, чтобы не сломать остальные соединения);
-* если бандла нет и включён аварийный флаг — доверяем системным корням,
-  а в LIVE это запрещено валидатором ``Settings``;
-* ``create_ssl_channel_credentials`` формирует credentials для gRPC.
+Нижележащие функции для собственного gRPC-кода оставлены как legacy helpers,
+но адаптеры SDK их не используют.
 """
 
 from __future__ import annotations
@@ -72,6 +68,17 @@ def configure_environment(ca_path: Path) -> None:
     os.environ.setdefault("REQUESTS_CA_BUNDLE", resolved)
     os.environ.setdefault("SSL_CERT_FILE", resolved)
     os.environ.setdefault("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", resolved)
+
+
+def configure_sdk_tls() -> None:
+    """Включает встроенный CA НУЦ Минцифры, который поддерживает SDK.
+
+    SDK формирует gRPC credentials самостоятельно и не принимает
+    ``channel_credentials`` в AsyncClient/AsyncSandboxClient. Поддерживаемый
+    способ выбора встроенного корневого сертификата — ``SSL_TBANK_VERIFY``.
+    """
+    os.environ["SSL_TBANK_VERIFY"] = "True"
+    logger.info("tls_configured", certificate_source="t_tech_sdk_embedded_russian_ca")
 
 
 def create_ssl_channel_credentials(

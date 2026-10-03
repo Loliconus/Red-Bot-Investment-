@@ -1,0 +1,64 @@
+{% extends 'base.html' %}
+{% block head %}<script defer src="/static/vendor/lightweight-charts.js"></script><script defer src="/static/js/chart-plugins.js"></script>{% endblock %}
+{% block content %}
+<section class="page-heading chart-heading">
+  <div>
+    <div class="eyebrow">№ 03 · НАБЛЮДАТЕЛЬНЫЙ ПУНКТ <span class="eyebrow-line"></span> РЫНОК</div>
+    <h1>{{ instrument.ticker }} <span class="muted">/ {{ instrument.class_code }}</span></h1>
+    <p>UID: <code>{{ instrument.uid }}</code> — единое поле рынка и решений бота.</p>
+  </div>
+  <div class="timeframe-control" role="group" aria-label="Таймфрейм">
+    <button class="selected" data-timeframe="1d">1D</button>
+    <button data-timeframe="1h">1H</button>
+    <button data-timeframe="1m">1m</button>
+  </div>
+</section>
+
+{% if active_instruments %}
+<nav class="instrument-rail" aria-label="Выбор инструмента">
+  {% for item in active_instruments %}
+  <a href="/chart/{{ item.uid }}" class="rail-chip {% if item.uid == instrument.uid %}active{% endif %}">{{ item.ticker }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+<div class="chart-layout" data-chart-uid="{{ instrument.uid }}">
+  <div class="chart-main">
+    <section class="panel chart-panel">
+      <div class="chart-tools">
+        <div class="chart-legend">
+          <span class="legend-ticker">{{ instrument.ticker }} / ₽</span>
+          <span id="chart-ohlc" class="mono">OHLC —</span>
+        </div>
+        <div class="chart-overlays">
+          <label><input type="checkbox" data-overlay="fib" checked> Фибо</label>
+          <label><input type="checkbox" data-overlay="markers" checked> Сделки</label>
+          <label><input type="checkbox" data-overlay="imoex"> IMOEX</label>
+          <label><input type="checkbox" data-overlay="volume" checked> Объём</label>
+        </div>
+      </div>
+      <div id="price-chart" class="price-chart" aria-label="Свечной график {{ instrument.ticker }}">
+        <div class="chart-loading">Загружаю сводку с фронта…</div>
+      </div>
+      <div id="oscillator-chart" class="oscillator-chart" aria-label="RSI и MACD"></div>
+      <div class="chart-attribution">График на <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts™</a> · Apache-2.0 · RSI/MACD считаются по загруженным свечам только для визуализации</div>
+    </section>
+  </div>
+  <aside class="chart-sidebar">
+    <section class="panel">
+      <div class="panel-head">
+        <div><div class="eyebrow">ПОСЛЕДНЕЕ РЕШЕНИЕ</div><h2>Мысль по бумаге</h2></div>
+        <a class="pill neutral" href="/reasoning">ВСЕ ↗</a>
+      </div>
+      <div id="chart-reasoning"><p class="empty-subtle">Нет решений для инструмента.</p></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <div><div class="eyebrow">ГЛУБИНА РЫНКА</div><h2>Стакан · топ-5</h2></div>
+        <span class="pill neutral">ОБНОВЛ. LIVE</span>
+      </div>
+      <div id="orderbook"><p class="empty-subtle">Данные стакана недоступны.</p></div>
+    </section>
+  </aside>
+</div>
+{% endblock %}

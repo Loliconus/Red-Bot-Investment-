@@ -45,14 +45,24 @@ def test_settings_forbids_insecure_tls_in_live() -> None:
         )
 
 
-def test_settings_allows_insecure_tls_in_sandbox() -> None:
-    settings = _settings(tbank={"api_token": "t", "account_id": "a", "insecure_tls_dev_only": True})
-    assert settings.tbank.insecure_tls_dev_only
+def test_settings_forbids_tls_verification_bypass_in_sandbox() -> None:
+    with pytest.raises(ValidationError, match="insecure_tls_dev_only"):
+        _settings(tbank={"api_token": "t", "account_id": "a", "insecure_tls_dev_only": True})
 
 
-def test_settings_requires_account_in_live() -> None:
-    with pytest.raises(ValidationError, match="account_id"):
-        _settings(execution_mode=ExecutionMode.LIVE, tbank={"api_token": "real"})
+def test_settings_rejects_unofficial_api_targets() -> None:
+    with pytest.raises(ValidationError, match="grpc_target_sandbox"):
+        _settings(tbank={"api_token": "t", "grpc_target_sandbox": "localhost:443"})
+
+
+def test_settings_rejects_unsupported_orderbook_depth() -> None:
+    with pytest.raises(ValidationError, match="orderbook_depth"):
+        _settings(tbank={"api_token": "t", "orderbook_depth": 5})
+
+
+def test_settings_allows_live_account_auto_resolution() -> None:
+    settings = _settings(execution_mode=ExecutionMode.LIVE, tbank={"api_token": "real-token"})
+    assert settings.tbank.account_id == ""
 
 
 def test_settings_rejects_placeholder_token_in_live() -> None:
@@ -88,6 +98,8 @@ def test_target_for_mode_switches_grpc_endpoint() -> None:
     sandbox = _settings()
     assert "sandbox" in target_for_mode(sandbox)
     assert "sandbox" not in target_for_mode(live)
+    assert "sandbox" not in target_for_mode(sandbox, ExecutionMode.LIVE)
+    assert "sandbox" in target_for_mode(live, ExecutionMode.SANDBOX)
 
 
 def test_load_settings_is_cached() -> None:

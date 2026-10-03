@@ -24,6 +24,7 @@ import structlog
 
 from adapters.driven.storage.connection_pool import DuckDBConnectionPool
 from adapters.driven.storage.schema import INDEX_STATEMENTS, ddl_script, version_statement
+from core.domain.catalog import InstrumentCatalogEntry
 from core.domain.entities import (
     Instrument,
     InvalidationRule,
@@ -33,7 +34,7 @@ from core.domain.entities import (
     TradePlan,
     TradeThesis,
 )
-from core.domain.enums import MarketRegime, Timeframe, TradePlanStatus, Trend
+from core.domain.enums import DecisionType, MarketRegime, Timeframe, TradePlanStatus, Trend
 from core.domain.value_objects import (
     OHLCV,
     CandleSeries,
@@ -43,10 +44,15 @@ from core.domain.value_objects import (
 from core.journal.hypothesis_engine import Hypothesis
 from core.journal.snapshots import DecisionSnapshot, MarketSnapshot
 from core.journal.trade_review import TradeReview
+from core.ports.persistence import DecisionRecord, GuiAuditEntry, WsReplayEvent
 
 logger = structlog.get_logger(__name__)
 
 ZERO = Decimal("0")
+
+#: Размер пачки при пакетном upsert каталога: тысячи записей в одном запросе
+#: DuckDB не нужны, а список параметров не должен разрастаться.
+_CATALOG_BATCH = 200
 
 
 # ------------------------------------------------------------------ кодеки
@@ -78,6 +84,44 @@ def _dt(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=UTC)
     return datetime.fromisoformat(str(value))
+
+
+#: Общий SELECT решений с тикером инструмента из market snapshot.
+_DECISION_SELECT = (
+    "SELECT d.id, d.market_snapshot_id, d.trade_plan_id, d.decision, "
+    "d.confluence_score, d.reasoning, d.risk_check_passed, d.risk_check_reason, "
+    "d.thought_text, d.created_at, m.instrument_uid "
+    "FROM decision_snapshots d LEFT JOIN market_snapshots m ON m.id = d.market_snapshot_id"
+)
+
+
+def _row_to_decision_record(row: Any) -> DecisionRecord:
+    return DecisionRecord(
+        instrument_uid=row[10] or "",
+        snapshot=DecisionSnapshot(
+            id=UUID(row[0]),
+            market_snapshot_id=UUID(row[1]),
+            trade_plan_id=UUID(row[2]) if row[2] else None,
+            decision=DecisionType(row[3]),
+            confluence_score=_dec(row[4]),
+            reasoning_chain=tuple(
+                ReasoningStep(
+                    module=step["module"],
+                    signal=step["signal"],
+                    weight=_dec(step["weight"]),
+                    raw_value=_dec(step["raw_value"])
+                    if step.get("raw_value") is not None
+                    else None,
+                    comment=step.get("comment", ""),
+                )
+                for step in json.loads(row[5])
+            ),
+            risk_check_passed=bool(row[6]),
+            risk_check_reason=row[7],
+            thought_text=row[8],
+            created_at=_dt(row[9]),
+        ),
+    )
 
 
 def _serialize_step(step: ReasoningStep) -> dict[str, Any]:
@@ -294,6 +338,20 @@ class DuckDBRepository:
         )
         return snapshot.id
 
+    async def list_recent_decisions(self, limit: int = 50) -> list[DecisionRecord]:
+        rows = await self._arun(
+            f"{_DECISION_SELECT} ORDER BY d.created_at DESC LIMIT ?",
+            [min(max(limit, 1), 500)],
+        )
+        return [_row_to_decision_record(row) for row in rows]
+
+    async def list_decisions_since(self, since: datetime) -> list[DecisionRecord]:
+        rows = await self._arun(
+            f"{_DECISION_SELECT} WHERE d.created_at >= ? ORDER BY d.created_at DESC LIMIT 5000",
+            [since],
+        )
+        return [_row_to_decision_record(row) for row in rows]
+
     async def save_decision_snapshots_bulk(self, snapshots: Any) -> None:
         for snapshot in snapshots:
             await self.save_decision_snapshot(snapshot)
@@ -336,7 +394,23 @@ class DuckDBRepository:
         return await self._plan_from_row(rows[0])
 
     async def get_open_trade_plans(self) -> list[TradePlan]:
-        open_statuses = ", ".join(
+        rows = await self._arun(
+            "SELECT * FROM trade_plans "
+            f"WHERE status IN ({self._open_plan_statuses()}) ORDER BY created_at"
+        )
+        # План, чей инструмент удалён из корзины, пропускаем: один такой
+        # «сирота» (например, запись от бэктеста со старым идентификатором)
+        # не должен ронять ни мониторинг позиций, ни дашборд.
+        plans: list[TradePlan] = []
+        for row in rows:
+            plan = await self._plan_from_row(row)
+            if plan is not None:
+                plans.append(plan)
+        return plans
+
+    @staticmethod
+    def _open_plan_statuses() -> str:
+        return ", ".join(
             f"'{s.value}'"
             for s in (
                 TradePlanStatus.PROPOSED,
@@ -344,16 +418,47 @@ class DuckDBRepository:
                 TradePlanStatus.ACTIVE,
             )
         )
-        rows = await self._arun(
-            f"SELECT * FROM trade_plans WHERE status IN ({open_statuses}) ORDER BY created_at"
-        )
-        return [await self._plan_from_row(row) for row in rows]
 
-    async def _plan_from_row(self, row: tuple[Any, ...]) -> TradePlan:
+    async def list_orphaned_trade_plan_ids(self) -> tuple[str, ...]:
+        """Id открытых планов, чей инструмент отсутствует в корзине."""
+        rows = await self._arun(
+            "SELECT id FROM trade_plans "
+            f"WHERE status IN ({self._open_plan_statuses()}) "
+            "AND instrument_uid NOT IN (SELECT uid FROM instruments)"
+        )
+        return tuple(str(row[0]) for row in rows)
+
+    async def close_orphaned_trade_plans(self, reason: str) -> tuple[str, ...]:
+        """Закрывает открытые планы без инструмента в корзине. Возвращает их id.
+
+        План без инструмента нельзя ни исполнить, ни промониторить: нет UID
+        для заявки и свечей. Поэтому такие планы закрываются явной причиной,
+        а не молча ломают чтение всех остальных.
+        """
+        plan_ids = await self.list_orphaned_trade_plan_ids()
+        if not plan_ids:
+            return ()
+        placeholders = ", ".join("?" for _ in plan_ids)
+        await self._arun(
+            "UPDATE trade_plans "
+            "SET status = ?, closed_at = now(), rejection_reason = ? "
+            f"WHERE id IN ({placeholders})",
+            [TradePlanStatus.CLOSED_MANUAL.value, reason, *plan_ids],
+        )
+        return plan_ids
+
+    async def _plan_from_row(self, row: tuple[Any, ...]) -> TradePlan | None:
         instrument = await self.get_instrument(row[1])
         if instrument is None:
-            msg = f"Инструмент {row[1]} не найден в БД"
-            raise ValueError(msg)
+            # Инструмент мог быть удалён из корзины или прийти из другого
+            # контура (бэктест со старым идентификатором). Читатель обязан
+            # деградировать предупреждением, а не падать ValueError.
+            logger.warning(
+                "trade_plan_instrument_missing",
+                plan_id=str(row[0]),
+                instrument_uid=str(row[1]),
+            )
+            return None
 
         invalidation_payload = json.loads(row[7])
         plan = TradePlan(
@@ -546,6 +651,9 @@ class DuckDBRepository:
             ],
         )
 
+    async def delete_instrument(self, uid: str) -> None:
+        await self._arun("DELETE FROM instruments WHERE uid = ?", [uid])
+
     async def list_instruments(self) -> list[Instrument]:
         rows = await self._arun(
             "SELECT uid, ticker, class_code, lot_size, is_benchmark, currency "
@@ -580,6 +688,187 @@ class DuckDBRepository:
             is_benchmark=bool(row[4]),
             currency=row[5],
         )
+
+    # ------------------------------------------------------------- каталог
+    #: Колонки таблицы ``instrument_catalog`` в порядке вставки и чтения.
+    _CATALOG_COLUMNS: tuple[str, ...] = (
+        "uid",
+        "ticker",
+        "class_code",
+        "name",
+        "lot_size",
+        "currency",
+        "instrument_type",
+        "isin",
+        "figi",
+        "api_trade_available",
+        "buy_available",
+        "sell_available",
+        "for_iis",
+        "for_qual_investor",
+        "exchange",
+        "sector",
+        "country_of_risk",
+        "liquidity_flag",
+        "min_price_increment",
+        "updated_at",
+    )
+
+    @staticmethod
+    def _catalog_values(entry: InstrumentCatalogEntry, updated_at: datetime) -> list[Any]:
+        return [
+            entry.uid,
+            entry.ticker,
+            entry.class_code,
+            entry.name,
+            entry.lot_size,
+            entry.currency,
+            entry.instrument_type,
+            entry.isin,
+            entry.figi,
+            entry.api_trade_available,
+            entry.buy_available,
+            entry.sell_available,
+            entry.for_iis,
+            entry.for_qual_investor,
+            entry.exchange,
+            entry.sector,
+            entry.country_of_risk,
+            entry.liquidity,
+            entry.min_price_increment,
+            updated_at,
+        ]
+
+    @classmethod
+    def _catalog_from_row(cls, row: tuple[Any, ...]) -> InstrumentCatalogEntry:
+        values = dict(zip(cls._CATALOG_COLUMNS, row, strict=True))
+        increment = values["min_price_increment"]
+        return InstrumentCatalogEntry(
+            uid=str(values["uid"]),
+            ticker=str(values["ticker"]),
+            class_code=str(values["class_code"]),
+            name=str(values["name"] or ""),
+            lot_size=int(values["lot_size"]),
+            currency=str(values["currency"] or "RUB"),
+            instrument_type=str(values["instrument_type"] or "share"),
+            isin=str(values["isin"] or ""),
+            figi=str(values["figi"] or ""),
+            api_trade_available=bool(values["api_trade_available"]),
+            buy_available=bool(values["buy_available"]),
+            sell_available=bool(values["sell_available"]),
+            for_iis=bool(values["for_iis"]),
+            for_qual_investor=bool(values["for_qual_investor"]),
+            exchange=str(values["exchange"] or ""),
+            sector=str(values["sector"] or ""),
+            country_of_risk=str(values["country_of_risk"] or ""),
+            liquidity=bool(values["liquidity_flag"]),
+            min_price_increment=_dec(increment) if increment is not None else None,
+            updated_at=_dt(values["updated_at"]) if values["updated_at"] else None,
+        )
+
+    async def save_catalog_entries(self, entries: Sequence[InstrumentCatalogEntry]) -> None:
+        """Пакетный upsert: каталог из API приходит пачкой на сотни записей."""
+        if not entries:
+            return
+        updated_at = datetime.now(tz=UTC)
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        row_placeholder = "(" + ", ".join("?" * len(self._CATALOG_COLUMNS)) + ")"
+        for start in range(0, len(entries), _CATALOG_BATCH):
+            chunk = entries[start : start + _CATALOG_BATCH]
+            placeholders = ", ".join(row_placeholder for _ in chunk)
+            params: list[Any] = []
+            for entry in chunk:
+                params.extend(self._catalog_values(entry, updated_at))
+            await self._arun(
+                f"INSERT OR REPLACE INTO instrument_catalog ({columns}) VALUES {placeholders}",
+                params,
+            )
+
+    async def delete_catalog_entries(self, instrument_types: Sequence[str]) -> None:
+        if not instrument_types:
+            return
+        placeholders = ", ".join("?" for _ in instrument_types)
+        await self._arun(
+            f"DELETE FROM instrument_catalog WHERE instrument_type IN ({placeholders})",
+            list(instrument_types),
+        )
+
+    def _catalog_where(
+        self,
+        *,
+        query: str | None,
+        instrument_types: Sequence[str] | None,
+        tradable_only: bool,
+    ) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if query:
+            needle = f"%{query.strip().upper()}%"
+            clauses.append(
+                "(UPPER(ticker) LIKE ? OR UPPER(name) LIKE ? OR UPPER(isin) LIKE ? "
+                "OR UPPER(figi) LIKE ? OR UPPER(uid) LIKE ?)"
+            )
+            params.extend([needle] * 5)
+        if instrument_types:
+            placeholders = ", ".join("?" for _ in instrument_types)
+            clauses.append(f"instrument_type IN ({placeholders})")
+            params.extend(instrument_types)
+        if tradable_only:
+            clauses.append("api_trade_available = TRUE AND buy_available = TRUE")
+        return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
+
+    async def list_catalog_entries(
+        self,
+        *,
+        query: str | None = None,
+        instrument_types: Sequence[str] | None = None,
+        tradable_only: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[InstrumentCatalogEntry]:
+        clause, params = self._catalog_where(
+            query=query,
+            instrument_types=instrument_types,
+            tradable_only=tradable_only,
+        )
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        rows = await self._arun(
+            f"SELECT {columns} FROM instrument_catalog{clause} "
+            "ORDER BY api_trade_available DESC, liquidity_flag DESC, ticker "
+            "LIMIT ? OFFSET ?",
+            [*params, min(max(limit, 1), 1000), max(offset, 0)],
+        )
+        return [self._catalog_from_row(row) for row in rows]
+
+    async def get_catalog_entry(self, uid: str) -> InstrumentCatalogEntry | None:
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        rows = await self._arun(f"SELECT {columns} FROM instrument_catalog WHERE uid = ?", [uid])
+        return self._catalog_from_row(rows[0]) if rows else None
+
+    async def find_catalog_entry(
+        self, ticker: str, class_code: str | None = None
+    ) -> InstrumentCatalogEntry | None:
+        """Точный поиск: класс-код обязателен, если задан — иначе неоднозначность."""
+        symbol = ticker.strip().upper()
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        if class_code:
+            rows = await self._arun(
+                f"SELECT {columns} FROM instrument_catalog WHERE ticker = ? AND class_code = ? "
+                "LIMIT 1",
+                [symbol, class_code.strip().upper()],
+            )
+        else:
+            rows = await self._arun(
+                f"SELECT {columns} FROM instrument_catalog WHERE ticker = ? LIMIT 1", [symbol]
+            )
+        return self._catalog_from_row(rows[0]) if rows else None
+
+    async def count_catalog_entries(self, instrument_types: Sequence[str] | None = None) -> int:
+        clause, params = self._catalog_where(
+            query=None, instrument_types=instrument_types, tradable_only=False
+        )
+        rows = await self._arun(f"SELECT count(*) FROM instrument_catalog{clause}", params)
+        return int(rows[0][0]) if rows else 0
 
     # ------------------------------------------------------------- портфель
     async def save_portfolio_state(self, state_json: str) -> None:
@@ -654,11 +943,120 @@ class DuckDBRepository:
 
         Мутирующие запросы отвергаются на уровне пула подключений.
         """
-        return await asyncio.to_thread(self._pool.query_readonly, sql)
+        return await asyncio.to_thread(self._pool.query_readonly, sql, params)
+
+    async def read_query(self, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+        return await asyncio.to_thread(self._pool.query_readonly_with_columns, sql)
+
+    async def append_gui_audit(self, entry: GuiAuditEntry) -> None:
+        await self._arun(
+            "INSERT INTO gui_audit (id, ts, section, action, before_value, after_value, outcome) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                str(entry.id),
+                entry.ts,
+                entry.section,
+                entry.action,
+                _to_json(entry.before),
+                _to_json(entry.after),
+                entry.outcome,
+            ],
+        )
+
+    async def list_gui_audit(
+        self,
+        *,
+        section: str | None = None,
+        action: str | None = None,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[GuiAuditEntry]:
+        where = []
+        params: list[Any] = []
+        if section:
+            where.append("section = ?")
+            params.append(section)
+        if action:
+            where.append("action = ?")
+            params.append(action)
+        if since:
+            where.append("ts >= ?")
+            params.append(since)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        rows = await self._arun(
+            "SELECT id, ts, section, action, before_value, after_value, outcome "
+            f"FROM gui_audit{clause} ORDER BY ts DESC LIMIT ?",
+            [*params, min(max(limit, 1), 500)],
+        )
+        return [
+            GuiAuditEntry(
+                id=UUID(row[0]),
+                ts=_dt(row[1]),
+                section=row[2],
+                action=row[3],
+                before=json.loads(row[4]),
+                after=json.loads(row[5]),
+                outcome=row[6],
+            )
+            for row in rows
+        ]
+
+    async def get_operational_value(self, key: str) -> str | None:
+        rows = await self._arun("SELECT value FROM operational_settings WHERE key = ?", [key])
+        return str(rows[0][0]) if rows else None
+
+    async def set_operational_value(self, key: str, value: str) -> None:
+        await self._arun(
+            "INSERT OR REPLACE INTO operational_settings (key, value, updated_at) VALUES (?, ?, ?)",
+            [key, value, datetime.now(tz=UTC)],
+        )
+
+    async def append_ws_event(self, entry: WsReplayEvent) -> None:
+        await self._arun(
+            "INSERT INTO ws_replay (channel, seq, ts, event_type, payload) VALUES (?, ?, ?, ?, ?)",
+            [entry.channel, entry.seq, entry.ts, entry.event_type, _to_json(entry.payload)],
+        )
+
+    async def list_ws_events(
+        self, channel: str, since_seq: int, limit: int = 1000
+    ) -> list[WsReplayEvent]:
+        rows = await self._arun(
+            "SELECT seq, ts, event_type, payload FROM ws_replay "
+            "WHERE channel = ? AND seq > ? ORDER BY seq LIMIT ?",
+            [channel, since_seq, min(max(limit, 1), 5000)],
+        )
+        return [
+            WsReplayEvent(
+                channel=channel,
+                seq=int(row[0]),
+                ts=_dt(row[1]),
+                event_type=row[2],
+                payload=json.loads(row[3]),
+            )
+            for row in rows
+        ]
+
+    async def last_ws_seq(self, channel: str) -> int:
+        rows = await self._arun(
+            "SELECT COALESCE(max(seq), 0) FROM ws_replay WHERE channel = ?", [channel]
+        )
+        return int(rows[0][0]) if rows else 0
+
+    async def set_memory_limit_mb(self, limit_mb: int) -> None:
+        await asyncio.to_thread(self._pool.set_memory_limit_mb, limit_mb)
+
+    async def memory_used_bytes(self) -> int | None:
+        try:
+            rows = await self._arun("SELECT sum(memory_usage_bytes) FROM duckdb_memory()")
+            return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+        except Exception:  # noqa: BLE001 — разные версии DuckDB дают разные исключения
+            return None  # Показываем «н/д», не выдумываем 0
 
     async def table_sizes(self) -> dict[str, int]:
         sizes: dict[str, int] = {}
         for table in (
+            "instruments",
+            "instrument_catalog",
             "candles",
             "market_snapshots",
             "decision_snapshots",

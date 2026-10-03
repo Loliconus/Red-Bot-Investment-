@@ -13,6 +13,7 @@ from application.composition import (
     build_backtest_adapters,
     build_context,
     build_storage,
+    load_saved_execution_mode,
 )
 from config.enums import ExecutionMode
 from config.settings import Settings
@@ -42,6 +43,15 @@ async def test_build_context_backtest_creates_defaults(tmp_path: Path) -> None:
         assert context.benchmark is None
     finally:
         await context.aclose()
+
+
+async def test_saved_execution_mode_overrides_bootstrap_fallback(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    repository, _archive = build_storage(settings)
+    await repository.set_operational_value("execution_mode", ExecutionMode.LIVE.value)
+    await repository.aclose()
+
+    assert await load_saved_execution_mode(settings) is ExecutionMode.LIVE
 
 
 async def test_build_storage_creates_files_and_archive(tmp_path: Path) -> None:

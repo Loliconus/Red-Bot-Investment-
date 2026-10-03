@@ -1,0 +1,65 @@
+<div class="overlay force-visible" x-data role="presentation" x-on:click.self="$el.closest('#modal-root').innerHTML = ''">
+  <div class="confirm-dialog decision-dialog" role="dialog" aria-modal="true" aria-label="Полное решение">
+    <button type="button" class="icon-button modal-close" x-on:click="$el.closest('#modal-root').innerHTML = ''" aria-label="Закрыть">×</button>
+    <div class="eyebrow">DECISION SNAPSHOT / {{ decision.created_at }}</div>
+    <h3>{{ decision.ticker }} · {{ decision.decision|upper }}</h3>
+    <p>{{ decision.thought_text }}</p>
+    <dl class="detail-list">
+      <div><dt>Confluence</dt><dd>{{ decision.confluence_score }}</dd></div>
+      <div><dt>Риск-проверка</dt><dd>{{ 'Пройдена' if decision.risk_check_passed else 'Отклонена' }}</dd></div>
+      <div><dt>Причина</dt><dd>{{ decision.risk_check_reason }}</dd></div>
+      <div><dt>TradePlan</dt><dd>{% if decision.plan %}{{ decision.plan.status|upper }} · вх. {{ decision.plan.entry }} / стоп {{ decision.plan.stop }} / цель {{ decision.plan.target }}{% else %}не создан{% endif %}</dd></div>
+    </dl>
+    <div class="separator"></div>
+    <strong>Цепочка обоснования</strong>
+    {% for step in decision.reasoning %}
+    <div class="reason-step">
+      <span>{{ step.module }}</span>
+      <span>{{ step.signal }}</span>
+      <b>{{ step.weight }}</b>
+      <small>{{ step.comment }}</small>
+    </div>
+    {% endfor %}
+    {% if decision.market %}
+    <div class="separator"></div>
+    <strong>Что видел бот ({{ decision.market.captured_at[:19]|replace('T', ' ') }})</strong>
+    {% if decision.market.ohlcv %}
+    <div class="market-bars">
+      {% for tf, bar in decision.market.ohlcv.items() %}
+      <div><small>{{ tf|upper }}</small><span>C <b>{{ bar.close }}</b></span><small>Δ {{ bar.volume }} шт.</small></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if decision.market.regime %}
+    <div class="market-regime">
+      {% for tf, regime in decision.market.regime.items() %}<span class="tag">РЕЖИМ {{ tf|upper }}: {{ regime }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    {% if decision.market.indicators %}
+    <details class="market-indicators">
+      <summary>Индикаторы по таймфреймам</summary>
+      {% for tf, values in decision.market.indicators.items() %}
+      <div class="market-indicators-tf">
+        <small>{{ tf|upper }}</small>
+        <div>
+          {% for name, value in values.items() %}<span><i>{{ name }}</i> {{ value[:14] }}</span>{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </details>
+    {% endif %}
+    {% if decision.market.orderbook %}
+    <details class="market-indicators">
+      <summary>Стакан в момент решения</summary>
+      <div class="market-book">
+        <div><small>BID</small>{% for level in decision.market.orderbook.bids %}<div><b>{{ level.price }}</b><span>{{ level.quantity }}</span></div>{% endfor %}</div>
+        <div><small>ASK</small>{% for level in decision.market.orderbook.asks %}<div><b>{{ level.price }}</b><span>{{ level.quantity }}</span></div>{% endfor %}</div>
+      </div>
+    </details>
+    {% endif %}
+    {% else %}
+    <div class="separator"></div>
+    <p class="empty-subtle">Рыночный снимок недоступен (архив истёк или не сохранён).</p>
+    {% endif %}
+  </div>
+</div>
