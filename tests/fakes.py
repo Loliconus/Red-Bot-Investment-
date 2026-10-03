@@ -164,6 +164,16 @@ class FakeBroker:
                 "is_current": True,
             }
         ]
+        if account_id != "test-account":
+            self._accounts.append(
+                {
+                    "id": "test-account",
+                    "name": "Тестовый счёт песочницы",
+                    "status": 2,
+                    "type": 1,
+                    "is_current": False,
+                }
+            )
 
     async def get_portfolio(self) -> PortfolioState | None:
         return PortfolioState(
