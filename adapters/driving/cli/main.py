@@ -223,6 +223,31 @@ async def _cli_backtest(ticker: str, timeframe: str, bars: int, horizon: int) ->
         await context.aclose()
 
 
+@app_cli.command("history-backfill")
+def cli_history_backfill(
+    instrument_id: str = typer.Option(..., help="UID или FIGI инструмента в T-Invest"),
+    years: str = typer.Option("2022,2023,2024,2025", help="Годы через запятую (7–10 лет истории)"),
+) -> None:
+    """Скачивает годовые ZIP-архивы 1m-свечей T-Invest и агрегирует иерархию 5m/15m/1h/4h/1d."""
+    year_list = [int(y.strip()) for y in years.split(",") if y.strip().isdecimal()]
+    asyncio.run(_cli_history_backfill(instrument_id, year_list))
+
+
+async def _cli_history_backfill(instrument_id: str, years: list[int]) -> None:
+    from adapters.driven.tbank.history_loader import TInvestHistoryArchiveLoader
+
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    token = settings.tbank.api_token.get_secret_value()
+    loader = TInvestHistoryArchiveLoader(token)
+    _hierarchy, summary = await loader.backfill_multi_year_hierarchy(instrument_id, years)
+    typer.echo(
+        f"[History Backfill] instrument_id={summary.instrument_id} | "
+        f"years={summary.years_loaded} | 1m bars={summary.minute_bars_loaded} | "
+        f"resampled={summary.resampled_counts}"
+    )
+
+
 @app_cli.command("run")
 def run(
     mode: str | None = typer.Option(

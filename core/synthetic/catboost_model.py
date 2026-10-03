@@ -468,7 +468,17 @@ class SingleHeadCatBoostClassifier:
         return margin
 
     def predict_raw_proba_row(self, encoded_row: Sequence[float]) -> float:
-        return _sigmoid(self.predict_margin_row(encoded_row))
+        oblivious_p = _sigmoid(self.predict_margin_row(encoded_row))
+        if self._native_model is not None:
+            predict_proba = getattr(self._native_model, "predict_proba", None)
+            if callable(predict_proba):
+                try:
+                    probs = predict_proba([list(encoded_row)])
+                    native_p = float(probs[0][1])
+                    return 0.5 * native_p + 0.5 * oblivious_p
+                except (RuntimeError, ValueError, TypeError, IndexError):
+                    return oblivious_p
+        return oblivious_p
 
     def predict_calibrated_proba(
         self,
