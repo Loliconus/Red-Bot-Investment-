@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -147,12 +148,13 @@ class ProbabilityCalibrator:
         best_t = 1.0
         best_nll = _nll_for_temp(1.0)
         try:
-            from scipy.optimize import minimize_scalar
-
-            opt_res = minimize_scalar(_nll_for_temp, bounds=(0.30, 2.40), method="bounded")
-            if opt_res.success and float(opt_res.fun) <= best_nll:
-                best_t = float(opt_res.x)
-                best_nll = float(opt_res.fun)
+            scipy_opt = importlib.import_module("scipy.optimize")
+            minimize_scalar = getattr(scipy_opt, "minimize_scalar", None)
+            if callable(minimize_scalar):
+                opt_res = minimize_scalar(_nll_for_temp, bounds=(0.30, 2.40), method="bounded")
+                if bool(getattr(opt_res, "success", False)) and float(opt_res.fun) <= best_nll:
+                    best_t = float(opt_res.x)
+                    best_nll = float(opt_res.fun)
         except ImportError:
             for step in range(30, 245, 5):
                 cand_t = step / 100.0
@@ -171,16 +173,21 @@ class ProbabilityCalibrator:
             temp_scaled = [_sigmoid(logits[i] / self.temperature) for i in range(n)]
             used_sklearn = False
             try:
-                from sklearn.isotonic import IsotonicRegression
-
-                iso = IsotonicRegression(y_min=0.02, y_max=0.98, out_of_bounds="clip")
-                iso.fit(temp_scaled, y_float)
-                thresholds_x = getattr(iso, "X_thresholds_", None)
-                thresholds_y = getattr(iso, "y_thresholds_", None)
-                if thresholds_x is not None and thresholds_y is not None and len(thresholds_x) >= 2:
-                    self._iso_knots_x = [float(x) for x in thresholds_x]
-                    self._iso_knots_y = [_clip_prob(float(y), eps=0.02) for y in thresholds_y]
-                    used_sklearn = True
+                sk_iso = importlib.import_module("sklearn.isotonic")
+                iso_cls = getattr(sk_iso, "IsotonicRegression", None)
+                if callable(iso_cls):
+                    iso = iso_cls(y_min=0.02, y_max=0.98, out_of_bounds="clip")
+                    iso.fit(temp_scaled, y_float)
+                    thresholds_x = getattr(iso, "X_thresholds_", None)
+                    thresholds_y = getattr(iso, "y_thresholds_", None)
+                    if (
+                        thresholds_x is not None
+                        and thresholds_y is not None
+                        and len(thresholds_x) >= 2
+                    ):
+                        self._iso_knots_x = [float(x) for x in thresholds_x]
+                        self._iso_knots_y = [_clip_prob(float(y), eps=0.02) for y in thresholds_y]
+                        used_sklearn = True
             except ImportError:
                 used_sklearn = False
 

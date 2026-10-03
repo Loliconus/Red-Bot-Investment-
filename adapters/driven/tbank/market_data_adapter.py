@@ -154,7 +154,7 @@ class TBankMarketDataAdapter:
                 limit=2400,
             )
             response = await retry_read(
-                lambda req=request: self._market_data.get_candles(request=req),
+                lambda: self._market_data.get_candles(request=request),
                 operation_name=f"get_candles_paginated:{interval_key}",
             )
             for raw_candle in getattr(response, "candles", ()) or ():

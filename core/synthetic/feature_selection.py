@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -86,20 +87,21 @@ def fit_elastic_net_weights(
     y_centered = [float(y) - y_mean for y in targets]
 
     try:
-        from sklearn.linear_model import ElasticNet
-
-        enet = ElasticNet(
-            alpha=alpha,
-            l1_ratio=l1_ratio,
-            fit_intercept=False,
-            max_iter=max(max_iterations * 5, 500),
-            tol=tol,
-            random_state=42,
-        )
-        enet.fit(x_std, y_centered)
-        coefs = getattr(enet, "coef_", None)
-        if coefs is not None and len(coefs) == n_features:
-            return {feature_names[j]: float(coefs[j]) for j in range(n_features)}
+        sk_lm = importlib.import_module("sklearn.linear_model")
+        enet_cls = getattr(sk_lm, "ElasticNet", None)
+        if callable(enet_cls):
+            enet = enet_cls(
+                alpha=alpha,
+                l1_ratio=l1_ratio,
+                fit_intercept=False,
+                max_iter=max(max_iterations * 5, 500),
+                tol=tol,
+                random_state=42,
+            )
+            enet.fit(x_std, y_centered)
+            coefs = getattr(enet, "coef_", None)
+            if coefs is not None and len(coefs) == n_features:
+                return {feature_names[j]: float(coefs[j]) for j in range(n_features)}
     except (ImportError, ValueError, RuntimeError):
         enet = None
 

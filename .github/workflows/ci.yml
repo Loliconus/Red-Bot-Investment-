@@ -40,10 +40,31 @@ jobs:
           ruff format --check .
 
       - name: Mypy (strict)
-        run: mypy
+        run: |
+          python -c '
+          import re, subprocess, sys
+          res = subprocess.run(["mypy"], text=True, capture_output=True)
+          sys.stdout.write(res.stdout)
+          sys.stderr.write(res.stderr)
+          for line in res.stdout.splitlines():
+              m = re.match(r"^([^:]+):(\d+): error: (.*)$", line)
+              if m:
+                  print(f"::error file={m.group(1)},line={m.group(2)}::{m.group(3)}")
+          sys.exit(res.returncode)
+          '
 
       - name: Тесты (без sandbox)
         env:
           REDBOT__TBANK__API_TOKEN: ci-placeholder
           REDBOT__TBANK__ACCOUNT_ID: ci-placeholder
-        run: pytest -m "not sandbox" -q
+        run: |
+          python -c '
+          import subprocess, sys
+          res = subprocess.run(["pytest", "-m", "not sandbox", "-q", "--tb=short"], text=True, capture_output=True)
+          sys.stdout.write(res.stdout)
+          sys.stderr.write(res.stderr)
+          if res.returncode != 0:
+              msg = " | ".join(line.strip() for line in (res.stdout + "\n" + res.stderr).splitlines() if "FAILED" in line or "Error" in line or "assert" in line)[:900]
+              print(f"::error file=tests/unit/test_synthetic_trader.py,line=1::{msg}")
+          sys.exit(res.returncode)
+          '
