@@ -28,6 +28,22 @@ class ChartResponse(BaseModel):
     markers: list[dict[str, Any]]
 
 
+@router.get("/chart")
+async def index(request: Request, context: ContextDep) -> Any:
+    instrument = next((i for i in context.instruments if not i.is_benchmark), None)
+    if instrument is None and context.instruments:
+        instrument = context.instruments[0]
+    if instrument is None:
+        raise HTTPException(status_code=404, detail="Корзина инструментов пуста")
+    return render_page(
+        request,
+        "pages/chart.html",
+        title=f"График · {instrument.ticker}",
+        section="chart",
+        data={"instrument": instrument},
+    )
+
+
 @router.get("/chart/{uid}")
 async def page(request: Request, context: ContextDep, uid: str) -> Any:
     instrument = next((i for i in context.instruments if i.uid == uid), None)

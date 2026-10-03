@@ -179,6 +179,50 @@ async def _doctor(repair: bool) -> None:
         await context.aclose()
 
 
+@app_cli.command("backtest")
+def cli_backtest(
+    ticker: str = typer.Option("SBER", help="Тикер инструмента"),
+    timeframe: str = typer.Option("1h", help="Рабочий таймфрейм: 5m, 15m, 1h, 4h, 1d"),
+    bars: int = typer.Option(96, help="Количество баров для оценки"),
+    horizon: int = typer.Option(8, help="Горизонт тройного барьера H"),
+) -> None:
+    """Запускает вероятностный бэктест и валидацию «Синтетического трейдера»."""
+    asyncio.run(_cli_backtest(ticker, timeframe, bars, horizon))
+
+
+async def _cli_backtest(ticker: str, timeframe: str, bars: int, horizon: int) -> None:
+    from application.composition import build_context
+    from application.use_cases.run_backtest import (
+        BacktestRunParameters,
+        run_synthetic_backtest,
+    )
+
+    settings = load_settings()
+    configure_logging(settings.log_level.value, json_logs=settings.log_json)
+    context = await build_context(settings, mode=ExecutionMode.BACKTEST)
+    try:
+        params = BacktestRunParameters(
+            instrument_uid=f"uid-{ticker.lower()}",
+            ticker=ticker.upper(),
+            timeframe=timeframe,
+            bar_count=bars,
+            horizon_bars=horizon,
+        )
+        report = await run_synthetic_backtest(context, params)
+        typer.echo(
+            f"[Синтетический трейдер] {report.ticker} ({report.timeframe}): "
+            f"Return={report.total_return_pct}% | MaxDD={report.max_drawdown_pct}% | "
+            f"OOS Sharpe={report.oos_sharpe_ratio:.2f} | "
+            f"P(trend)={report.latest_triad.p_trend:.2f} | "
+            f"P(up|trend)={report.latest_triad.p_up_given_trend:.2f} | "
+            f"P(break<=H)={report.latest_triad.p_break_within_h:.2f} | "
+            f"PBO={report.overfitting_audit.pbo_probability:.2f} | "
+            f"DSR={report.overfitting_audit.deflated_sharpe_ratio:.2f}"
+        )
+    finally:
+        await context.aclose()
+
+
 @app_cli.command("run")
 def run(
     mode: str | None = typer.Option(

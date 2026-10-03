@@ -18,17 +18,20 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from adapters.driven.tbank.mappers import (
+    CANDLE_INTERVAL_MAX_WINDOW,
+    SYNTHETIC_INTERVAL_TO_API_ENUM,
     TIMEFRAME_TO_API_INTERVAL,
     TIMEFRAME_TO_INDICATOR_INTERVAL,
     TIMEFRAME_TO_SUBSCRIPTION_INTERVAL,
     candle_to_domain,
     datetime_to_proto_timestamp,
+    indicative_to_domain,
     instrument_list_to_catalog,
     instrument_short_to_catalog_entry,
     instrument_to_domain,
     orderbook_to_domain,
 )
-from adapters.driven.tbank.retry import retry_read
+from adapters.driven.tbank.retry import AdaptiveRateLimitGovernor, retry_read
 from core.domain.catalog import DEFAULT_CATALOG_TYPES, InstrumentCatalogEntry
 from core.domain.entities import Instrument
 from core.domain.enums import Timeframe
@@ -79,6 +82,7 @@ class TBankMarketDataAdapter:
 
     def __init__(self, channel: TInvestChannel) -> None:
         self._channel = channel
+        self._rate_governor = AdaptiveRateLimitGovernor()
 
     @property
     def _market_data(self) -> Any:
@@ -94,6 +98,7 @@ class TBankMarketDataAdapter:
         """Исторические свечи. Всегда tz-aware UTC."""
         from t_tech.invest.grpc.schemas import CandleInterval, GetCandlesRequest
 
+        await self._rate_governor.throttle_if_needed()
         request = GetCandlesRequest(
             instrument_id=instrument.uid,
             from_=datetime_to_proto_timestamp(from_),
@@ -106,6 +111,81 @@ class TBankMarketDataAdapter:
             operation_name="get_candles",
         )
         return [candle_to_domain(c, timeframe) for c in response.candles]
+
+    async def get_candles_paginated(
+        self,
+        instrument: Instrument,
+        interval: Timeframe | str,
+        from_: datetime,
+        to: datetime,
+        *,
+        domain_timeframe: Timeframe = Timeframe.H1,
+    ) -> list[OHLCV]:
+        """Пагинированная выгрузка свечей за 7–10 лет по окнам T-Invest API (раздел 1.1 ТЗ).
+
+        Поддерживает все интервалы иерархии (``1d``, ``4h``, ``1h``, ``15m``, ``5m``, ``1m``),
+        автоматически разбивая длинный диапазон ``[from_, to]`` на допустимые окна
+        ``CANDLE_INTERVAL_MAX_WINDOW`` и соблюдая квоты ``x-ratelimit-*``.
+        """
+        from datetime import timedelta
+
+        from t_tech.invest.grpc.schemas import CandleInterval, GetCandlesRequest
+
+        interval_key = interval.value if isinstance(interval, Timeframe) else str(interval).lower()
+        enum_name = SYNTHETIC_INTERVAL_TO_API_ENUM.get(interval_key)
+        if enum_name is None:
+            msg = f"Неподдерживаемый интервал свечей T-Invest API: {interval}"
+            raise ValueError(msg)
+
+        window_step = CANDLE_INTERVAL_MAX_WINDOW.get(interval_key, timedelta(days=30))
+        start_utc = datetime_to_proto_timestamp(from_)
+        end_utc = datetime_to_proto_timestamp(to)
+
+        dedup: dict[datetime, OHLCV] = {}
+        cursor = start_utc
+        while cursor < end_utc:
+            chunk_end = min(cursor + window_step, end_utc)
+            await self._rate_governor.throttle_if_needed()
+            request = GetCandlesRequest(
+                instrument_id=instrument.uid,
+                from_=cursor,
+                to=chunk_end,
+                interval=getattr(CandleInterval, enum_name),
+                limit=2400,
+            )
+            response = await retry_read(
+                lambda req=request: self._market_data.get_candles(request=req),
+                operation_name=f"get_candles_paginated:{interval_key}",
+            )
+            for raw_candle in getattr(response, "candles", ()) or ():
+                if not getattr(raw_candle, "is_complete", True):
+                    continue
+                domain_bar = candle_to_domain(raw_candle, domain_timeframe)
+                dedup[domain_bar.timestamp] = domain_bar
+            cursor = chunk_end
+
+        return [dedup[ts] for ts in sorted(dedup)]
+
+    async def get_indicatives(
+        self,
+        tickers: Sequence[str] = ("IMOEX", "BRENT"),
+    ) -> list[Instrument]:
+        """Загружает индикативные инструменты (``IMOEX``, нефть) через ``Indicatives``."""
+        from t_tech.invest.grpc.schemas import IndicativesRequest
+
+        await self._rate_governor.throttle_if_needed()
+        request = IndicativesRequest()
+        response = await retry_read(
+            lambda: self._channel.services.instruments.indicatives(request=request),
+            operation_name="indicatives",
+        )
+        wanted = {t.strip().upper() for t in tickers if t.strip()}
+        matched: list[Instrument] = []
+        for item in getattr(response, "instruments", ()) or ():
+            inst = indicative_to_domain(item)
+            if not wanted or inst.ticker.upper() in wanted:
+                matched.append(inst)
+        return matched
 
     async def stream_candles(
         self,

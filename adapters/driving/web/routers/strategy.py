@@ -75,6 +75,35 @@ async def page(request: Request, context: ContextDep) -> Any:
     )
 
 
+@router.post("/strategy/execution")
+async def update_execution_params(
+    request: Request,
+    context: ContextDep,
+    _session: SessionDep,
+    commission_rate: str = Form("0.0005"),
+    min_viable_target_multiplier: str = Form("3.0"),
+    max_holding_hours: int = Form(72),
+    allow_counter_trend: bool = Form(False),
+) -> Any:
+    try:
+        comm = Decimal(str(commission_rate))
+        mult = Decimal(str(min_viable_target_multiplier))
+        ttl = max(1, min(int(max_holding_hours), 720))
+    except (InvalidOperation, ValueError):
+        comm = context.config.commission_rate
+        mult = context.config.min_viable_target_multiplier
+        ttl = context.config.max_holding_hours
+
+    await update_strategy_config(
+        context,
+        commission_rate=min(Decimal("0.05"), max(Decimal("0"), comm)),
+        min_viable_target_multiplier=min(Decimal("20"), max(Decimal("1"), mult)),
+        max_holding_hours=ttl,
+        allow_counter_trend=bool(allow_counter_trend),
+    )
+    return await page(request, context)
+
+
 @router.post("/strategy/scoring")
 async def update_scoring(
     request: Request,

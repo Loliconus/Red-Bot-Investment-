@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -40,6 +40,44 @@ TIMEFRAME_TO_INDICATOR_INTERVAL: dict[Timeframe, str] = {
     Timeframe.M1: "INDICATOR_INTERVAL_ONE_MINUTE",
     Timeframe.H1: "INDICATOR_INTERVAL_ONE_HOUR",
     Timeframe.D1: "INDICATOR_INTERVAL_ONE_DAY",
+}
+
+#: Полное отображение строковых интервалов иерархии «Синтетического трейдера»
+#: (1D / 4H -> 1H -> 15m / 5m / 1m) в символьные имена ``CandleInterval`` T-Invest SDK.
+SYNTHETIC_INTERVAL_TO_API_ENUM: dict[str, str] = {
+    "5s": "CANDLE_INTERVAL_5_SEC",
+    "1m": "CANDLE_INTERVAL_1_MIN",
+    "2m": "CANDLE_INTERVAL_2_MIN",
+    "3m": "CANDLE_INTERVAL_3_MIN",
+    "5m": "CANDLE_INTERVAL_5_MIN",
+    "10m": "CANDLE_INTERVAL_10_MIN",
+    "15m": "CANDLE_INTERVAL_15_MIN",
+    "30m": "CANDLE_INTERVAL_30_MIN",
+    "1h": "CANDLE_INTERVAL_HOUR",
+    "2h": "CANDLE_INTERVAL_2_HOUR",
+    "4h": "CANDLE_INTERVAL_4_HOUR",
+    "1d": "CANDLE_INTERVAL_DAY",
+    "1w": "CANDLE_INTERVAL_WEEK",
+    "1mo": "CANDLE_INTERVAL_MONTH",
+}
+
+#: Максимальное окно одного запроса ``GetCandles`` в T-Invest API (до 2400 свечей за вызов)
+#: для бесшовной пагинации на глубину 7–10 лет.
+CANDLE_INTERVAL_MAX_WINDOW: dict[str, timedelta] = {
+    "5s": timedelta(hours=3),
+    "1m": timedelta(days=1),
+    "2m": timedelta(days=2),
+    "3m": timedelta(days=3),
+    "5m": timedelta(days=5),
+    "10m": timedelta(days=10),
+    "15m": timedelta(days=14),
+    "30m": timedelta(days=28),
+    "1h": timedelta(days=60),
+    "2h": timedelta(days=90),
+    "4h": timedelta(days=180),
+    "1d": timedelta(days=365),
+    "1w": timedelta(days=365 * 3),
+    "1mo": timedelta(days=365 * 10),
 }
 
 
@@ -131,9 +169,25 @@ def instrument_to_domain(instrument: Any, *, is_benchmark: bool = False) -> Inst
         uid=str(instrument.uid),
         ticker=str(instrument.ticker),
         class_code=str(getattr(instrument, "class_code", "TQBR")),
-        lot_size=int(instrument.lot),
+        lot_size=max(int(getattr(instrument, "lot", 1) or 1), 1),
         is_benchmark=is_benchmark,
         currency=str(getattr(instrument, "currency", "rub")).upper(),
+    )
+
+
+def indicative_to_domain(raw: Any) -> Instrument:
+    """``IndicativeResponse`` из ``Indicatives`` → доменный индикатив (IMOEX, Brent)."""
+    uid = _catalog_text(raw, "uid", "figi")
+    ticker = _catalog_text(raw, "ticker") or "IMOEX"
+    class_code = _catalog_text(raw, "class_code") or "SPBXM"
+    currency = (_catalog_text(raw, "currency") or "RUB").upper()
+    return Instrument(
+        uid=uid,
+        ticker=ticker,
+        class_code=class_code,
+        lot_size=1,
+        is_benchmark=True,
+        currency=currency,
     )
 
 

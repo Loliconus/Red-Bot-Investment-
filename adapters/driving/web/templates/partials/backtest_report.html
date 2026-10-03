@@ -1,0 +1,356 @@
+<div id="synthetic-backtest-results">
+  <!-- KPI Funnel: Триада вероятностей + ключевые метрики прогона -->
+  <section class="funnel" aria-label="Сводка Синтетического трейдера">
+    <div class="funnel-stage">
+      <small>P(TREND) · РЕЖИМ</small>
+      <strong class="positive">{{ report.triad.p_trend_pct }}%</strong>
+      <div class="funnel-bar"><i style="width: {{ report.triad.p_trend_pct }}%"></i></div>
+      <span class="funnel-conv">raw {{ report.triad.raw_p_trend_pct }}% · порог a={{ report.params.trend_threshold_a }}</span>
+    </div>
+    <div class="funnel-stage">
+      <small>P(UP | TREND) · ВЕКТОР</small>
+      <strong>{{ report.triad.p_up_pct }}%</strong>
+      <div class="funnel-bar"><i style="width: {{ report.triad.p_up_pct }}%"></i></div>
+      <span class="funnel-conv">raw {{ report.triad.raw_p_up_pct }}% · порог b={{ report.params.direction_threshold_b }}</span>
+    </div>
+    <div class="funnel-stage">
+      <small>P(BREAK ≤ H) · РИСК СЛОМА</small>
+      <strong class="accent">{{ report.triad.p_break_pct }}%</strong>
+      <div class="funnel-bar"><i style="width: {{ report.triad.p_break_pct }}%"></i></div>
+      <span class="funnel-conv">горизонт H={{ report.params.horizon_bars }} баров</span>
+    </div>
+    <div class="funnel-stage">
+      <small>OOS ДОХОДНОСТЬ</small>
+      <strong class="{% if report.total_return_pct.startswith('-') %}negative{% else %}positive{% endif %}">
+        {{ report.total_return_pct }}%
+      </strong>
+      <span class="funnel-conv">Капитал: {{ report.final_equity }} ₽</span>
+    </div>
+    <div class="funnel-stage">
+      <small>OOS SHARPE / DSR</small>
+      <strong>{{ report.oos_sharpe }}</strong>
+      <span class="funnel-conv">DSR: {{ report.validation.dsr_pct }} · MaxDD: {{ report.max_drawdown_pct }}%</span>
+    </div>
+    <div class="funnel-stage">
+      <small>PBO (CSCV) / SPA</small>
+      <strong>{{ report.validation.pbo_pct }}</strong>
+      <span class="funnel-conv">Hansen SPA p={{ report.validation.hansen_spa_pvalue }}</span>
+    </div>
+  </section>
+
+  <!-- Секция 1: Этап 0 (HMM Гамильтона) + Детерминированный Риск-Движок + ℓ1-фильтр -->
+  <div class="two-column">
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">ЭТАП 0 &amp; РАЗДЕЛ 2.2</span>
+          <h2>HMM-Режим Гамильтона и ℓ1-Фильтрация Тренда</h2>
+        </div>
+        <span class="pill {% if report.hmm.is_trading_banned %}danger{% else %}success{% endif %}">
+          HMM: {{ report.hmm.dominant_regime }}
+        </span>
+      </div>
+      <dl class="detail-list">
+        <div>
+          <dt>Апостериорная вероятность TREND</dt>
+          <dd>{{ report.hmm.prob_trend_pct }}%</dd>
+        </div>
+        <div>
+          <dt>Апостериорная вероятность CHOP («пила»)</dt>
+          <dd>{{ report.hmm.prob_chop_pct }}%</dd>
+        </div>
+        <div>
+          <dt>Апостериорная вероятность PANIC</dt>
+          <dd class="{% if report.hmm.is_trading_banned %}negative{% endif %}">{{ report.hmm.prob_panic_pct }}%</dd>
+        </div>
+        <div>
+          <dt>Ожидаемая длительность режима</dt>
+          <dd>{{ report.hmm.expected_duration }} баров</dd>
+        </div>
+        <div>
+          <dt>ℓ1-Trend Filter (Kim, Boyd 2009) · λ / Узлы излома</dt>
+          <dd>λ={{ report.l1_filter.lambda_reg }} · {{ report.l1_filter.knots_count }} knots</dd>
+        </div>
+        <div>
+          <dt>Остаточный шум (σ_noise) / Зазор двойственности</dt>
+          <dd>{{ report.l1_filter.residual_std }} / {{ report.l1_filter.dual_gap }}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">РАЗДЕЛ 6 · ЗАЩИТНЫЙ КОНТУР</span>
+          <h2>Детерминированный Риск-Движок</h2>
+        </div>
+        <span class="pill {% if report.risk_decision.allow_entry %}success{% else %}neutral{% endif %}">
+          {{ report.risk_decision.direction }} · {{ report.risk_decision.recommended_lots }} ЛОТ.
+        </span>
+      </div>
+      <dl class="detail-list">
+        <div>
+          <dt>Доля капитала (Volatility &amp; Break Adjusted)</dt>
+          <dd>{{ report.risk_decision.position_fraction_pct }}%</dd>
+        </div>
+        <div>
+          <dt>Множитель волатильности / Множитель (1 − P(break))</dt>
+          <dd>×{{ report.risk_decision.vol_scalar }} / ×{{ report.risk_decision.break_scalar }}</dd>
+        </div>
+        <div>
+          <dt>Адаптивный Stop-Loss / Take-Profit (ATR)</dt>
+          <dd>{{ report.risk_decision.stop_loss }} ₽ / {{ report.risk_decision.take_profit }} ₽</dd>
+        </div>
+        <div>
+          <dt>Динамический Trailing-Stop</dt>
+          <dd>{{ report.risk_decision.trailing_stop }} ₽</dd>
+        </div>
+        <div>
+          <dt>Ожидаемое преимущество E[edge] / С поправкой на слом</dt>
+          <dd>{{ report.triad.directional_edge }} / {{ report.triad.confidence_edge }}</dd>
+        </div>
+        <div>
+          <dt>Вердикт защитных контуров</dt>
+          <dd>{{ report.risk_decision.blocked_reason }}</dd>
+        </div>
+      </dl>
+    </section>
+  </div>
+
+  <!-- Секция 2: Статистическая валидация (CPCV, PBO, DSR, White RC, Hansen SPA) + Параллельные бенчмарки -->
+  <div class="two-column">
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">РАЗДЕЛ 5 · ЗАЩИТА ОТ DATA SNOOPING</span>
+          <h2>Purged K-Fold · CPCV · PBO · DSR · SPA</h2>
+        </div>
+        <span class="pill {% if report.validation.passes_gate %}success{% else %}warning{% endif %}">
+          {% if report.validation.passes_gate %}GATE PASSED{% else %}REVIEW REQUIRED{% endif %}
+        </span>
+      </div>
+      <dl class="detail-list">
+        <div>
+          <dt>Combinatorial Purged CV (CPCV фолдов / путей)</dt>
+          <dd>{{ report.validation.cpcv_splits }} фолдов / {{ report.validation.cpcv_paths }} путей</dd>
+        </div>
+        <div>
+          <dt>CPCV OOS Sharpe (среднее ± σ по путям)</dt>
+          <dd>{{ report.validation.cpcv_mean_sharpe }} ± {{ report.validation.cpcv_std_sharpe }}</dd>
+        </div>
+        <div>
+          <dt>Probability of Backtest Overfitting (PBO, CSCV)</dt>
+          <dd>{{ report.validation.pbo_pct }} (logit {{ report.validation.pbo_logit }})</dd>
+        </div>
+        <div>
+          <dt>Deflated Sharpe Ratio (DSR, N={{ report.validation.n_trials }} попыток)</dt>
+          <dd>{{ report.validation.dsr_pct }} (порог SR₀={{ report.validation.null_sr0 }})</dd>
+        </div>
+        <div>
+          <dt>White's Reality Check / Hansen's SPA p-value</dt>
+          <dd>RC p={{ report.validation.white_rc_pvalue }} · SPA p={{ report.validation.hansen_spa_pvalue }}</dd>
+        </div>
+        <div>
+          <dt>Frozen Holdout (неприкосновенный срез)</dt>
+          <dd>Dev: {{ report.validation.dev_samples }} · Holdout: {{ report.validation.holdout_samples }} (с {{ report.validation.holdout_cutoff }})</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">РАЗДЕЛ 7.2 · ОБЯЗАТЕЛЬНЫЕ ЭТАЛОНЫ</span>
+          <h2>Сравнение с параллельными бенчмарками (с комиссией)</h2>
+        </div>
+        <span class="pill {% if report.mlops.beats_all_benchmarks %}success{% else %}warning{% endif %}">
+          {% if report.mlops.beats_all_benchmarks %}BEATS BENCHMARKS{% else %}BENCHMARK AHEAD{% endif %}
+        </span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Стратегия / Эталон</th>
+              <th>Доходность</th>
+              <th>Макс. просадка</th>
+              <th>Sharpe</th>
+              <th>Сделки</th>
+              <th>Итоговый капитал</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="row-active">
+              <td><strong>Синтетический трейдер ({{ report.ticker }})</strong></td>
+              <td class="mono">{{ report.total_return_pct }}%</td>
+              <td class="mono">{{ report.max_drawdown_pct }}%</td>
+              <td class="mono">{{ report.oos_sharpe }}</td>
+              <td class="mono">{{ report.trades_count }}</td>
+              <td class="mono">{{ report.final_equity }} ₽</td>
+            </tr>
+            {% for b in report.benchmarks %}
+            <tr>
+              <td>{{ b.name }}</td>
+              <td class="mono">{{ b.total_return_pct }}%</td>
+              <td class="mono">{{ b.max_drawdown_pct }}%</td>
+              <td class="mono">{{ b.sharpe }}</td>
+              <td class="mono">{{ b.trades }}</td>
+              <td class="mono">{{ b.final_equity }} ₽</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Секция 3: Трёхэтапный отбор признаков + TreeSHAP вклады и Калибровка вероятностей -->
+  <div class="two-column">
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">РАЗДЕЛ 3.3 · ОТБОР ПРИЗНАКОВ</span>
+          <h2>Воронка Elastic Net → Stability → CatBoost TreeSHAP</h2>
+        </div>
+        <span class="panel-counter">
+          {{ report.feature_selection.initial_count }} → {{ report.feature_selection.enet_count }} → {{ report.feature_selection.stability_count }} → {{ report.feature_selection.final_count }} ПРИЗН.
+        </span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table compact-table">
+          <thead>
+            <tr>
+              <th>Ведущий признак (TreeSHAP)</th>
+              <th>Вклад в логит (SHAP φ)</th>
+              <th>Отсечённые коллинеарные дубли (|r| &gt; 0.90)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in report.triad.shap %}
+            <tr>
+              <td class="mono"><strong>{{ item.feature }}</strong></td>
+              <td class="mono">{{ item.value }}</td>
+              <td class="mono">
+                {% if loop.index0 < report.feature_selection.dropped_collinear|length %}
+                  {% set pair = report.feature_selection.dropped_collinear[loop.index0] %}
+                  {{ pair.dropped }} ↔ {{ pair.kept }} ({{ pair.corr }})
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">РАЗДЕЛ 4.1 · КАЛИБРОВКА ВЫХОДОВ</span>
+          <h2>Brier Score · ECE · Reliability Diagram</h2>
+        </div>
+        <span class="panel-counter">TEMPERATURE + ISOTONIC PAVA</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table compact-table">
+          <thead>
+            <tr>
+              <th>Вероятностная голова</th>
+              <th>T</th>
+              <th>Brier (Raw → Cal)</th>
+              <th>BSS</th>
+              <th>ECE (Raw → Cal)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for cal in report.calibration %}
+            <tr>
+              <td><strong>{{ cal.head_name }}</strong></td>
+              <td class="mono">{{ cal.temperature }}</td>
+              <td class="mono">{{ cal.brier_raw }} → <strong>{{ cal.brier_cal }}</strong></td>
+              <td class="mono">{{ cal.bss }}</td>
+              <td class="mono">{{ cal.ece_raw }} → <strong>{{ cal.ece_cal }}</strong></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Секция 4: MLOps (DVC-версия датасета, MLflow-эксперимент, мониторинг PSI-дрейфа) -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <span class="eyebrow">РАЗДЕЛ 7 · MLOPS &amp; МОНИТОРИНГ В БОЮ</span>
+        <h2>Версионирование датасета (DVC) · Эксперимент · Дрейф признаков (PSI)</h2>
+      </div>
+      <span class="pill {% if report.mlops.retrain_triggered %}danger{% else %}success{% endif %}">
+        PSI: {{ report.mlops.drift_status }} (max={{ report.mlops.max_psi }})
+      </span>
+    </div>
+    <dl class="detail-list">
+      <div>
+        <dt>Паспорт датасета (DVC Snapshot ID / SHA-256)</dt>
+        <dd>{{ report.mlops.dataset_id }} · {{ report.mlops.sha256_short }}… ({{ report.mlops.bar_count }} баров)</dd>
+      </div>
+      <div>
+        <dt>Запись эксперимента (MLflow Run ID / Схема)</dt>
+        <dd>{{ report.mlops.run_id }} · {{ report.mlops.schema_version }}</dd>
+      </div>
+      <div>
+        <dt>Триггер переобучения (Auto-Retrain Gate)</dt>
+        <dd>{{ report.mlops.retrain_reason }} · Shadow/Sandbox Ready: {{ "ДА" if report.mlops.shadow_mode_ready else "ТРЕБУЕТСЯ НАСТРОЙКА" }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <!-- Секция 5: Хронологический журнал шагов бэктеста -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <span class="eyebrow">ЖУРНАЛ СИМУЛЯЦИИ ПО ЗАКРЫТЫМ БАРАМ</span>
+        <h2>Последние шаги прогона «Синтетического трейдера»</h2>
+      </div>
+      <span class="panel-counter">БЕЗ УТЕЧЕК БУДУЩЕГО (POINT-IN-TIME)</span>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table compact-table">
+        <thead>
+          <tr>
+            <th>Время (UTC)</th>
+            <th>Close</th>
+            <th>ℓ1-Тренд</th>
+            <th>HMM</th>
+            <th>P(trend)</th>
+            <th>P(up|trend)</th>
+            <th>P(break≤H)</th>
+            <th>Позиция</th>
+            <th>Доля</th>
+            <th>Капитал</th>
+            <th>Статус риск-фильтра</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for st in report.steps %}
+          <tr>
+            <td class="mono">{{ st.timestamp }}</td>
+            <td class="mono">{{ st.close_price }}</td>
+            <td class="mono">{{ st.l1_trend_price }} ({{ st.l1_slope }})</td>
+            <td><span class="tag">{{ st.hmm_regime }}</span></td>
+            <td class="mono">{{ st.p_trend }}</td>
+            <td class="mono">{{ st.p_up }}</td>
+            <td class="mono">{{ st.p_break }}</td>
+            <td><strong>{{ st.direction }}</strong></td>
+            <td class="mono">{{ st.position_fraction }}</td>
+            <td class="mono">{{ st.equity }} ₽</td>
+            <td class="mono">{{ st.blocked_reason }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
