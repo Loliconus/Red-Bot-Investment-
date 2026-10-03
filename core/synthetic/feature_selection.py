@@ -101,7 +101,7 @@ def fit_elastic_net_weights(
         if coefs is not None and len(coefs) == n_features:
             return {feature_names[j]: float(coefs[j]) for j in range(n_features)}
     except (ImportError, ValueError, RuntimeError):
-        pass
+        enet = None
 
     weights = [0.0] * n_features
     residual = list(y_centered)

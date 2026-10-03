@@ -35,8 +35,8 @@ jobs:
       - name: Ruff
         run: |
           ruff format .
-          ruff check --fix .
-          ruff check .
+          ruff check --fix . || true
+          ruff check --output-format=github .
           ruff format --check .
 
       - name: Mypy (strict)

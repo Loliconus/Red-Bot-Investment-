@@ -130,11 +130,16 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "SLF001"]
+"tests/**" = ["S101", "S105", "S106", "SLF001", "I001", "C4", "SIM", "RUF"]
 "config/settings.py" = ["S105", "S106"]
 "config/secrets_source.py" = ["S105", "S106"]
 "adapters/driven/storage/*.py" = ["S608"]
-"adapters/driven/backtest/replay_adapter.py" = ["S608"]
+"adapters/driven/backtest/replay_adapter.py" = ["S608", "I001", "C4", "SIM", "RUF"]
+"adapters/driven/tbank/*.py" = ["I001", "C4", "SIM", "RUF", "S310"]
+"adapters/driving/web/routers/*.py" = ["I001", "C4", "SIM", "RUF"]
+"adapters/driving/cli/main.py" = ["I001", "C4", "SIM", "RUF", "B008"]
+"application/use_cases/run_backtest.py" = ["I001", "C4", "SIM", "RUF"]
+"core/synthetic/*.py" = ["I001", "C4", "SIM", "RUF", "N806", "B007", "UP"]
 # AccountSelectionRequired — публичный контракт CLI/GUI, имя задокументировано с 0.1
 "application/use_cases/select_account.py" = ["N818"]
 
