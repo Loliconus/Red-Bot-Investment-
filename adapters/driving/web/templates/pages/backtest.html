@@ -1,141 +1,158 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
+{% block head %}<script defer src="/static/js/backtest-arena.js"></script>{% endblock %}
 {% block content %}
 <section class="page-heading">
   <div>
-    <span class="eyebrow">ML-АРЕНА И ВЕРОЯТНОСТНЫЙ БЭКТЕСТ · PYTHON 3.14</span>
-    <h1>Синтетический трейдер · Соревнование алгоритмов и разбор решений</h1>
-    <p>
-      Наглядное сравнение трёхголовой вероятностной модели <strong>CatBoost Triad + HMM Гамильтона</strong>
-      против 5 других алгоритмов (<strong>LightGBM / HistGBDT</strong>, <strong>ElasticNet ML</strong>,
-      <strong>Пересечение средних 8/21</strong>, <strong>RSI(14)</strong> и <strong>Buy &amp; Hold IMOEX</strong>)
-      с отображением каждой точки входа/выхода и причин принятия решений простым человеческим языком.
-    </p>
+    <div class="eyebrow">№ 08 · ИСПЫТАТЕЛЬНЫЙ ПОЛИГОН И ОБУЧЕНИЕ ИИ <span class="eyebrow-line"></span> АРЕНА АЛГОРИТМОВ</div>
+    <h1>«Синтетический трейдер» · Обучение весов, БД свечей и соревнование алгоритмов</h1>
+    <p>Прозрачный контур без «чёрных ящиков»: свечи хранятся в локальной базе <code>DuckDB (таблица candles)</code>, нейросеть (<code>Temporal MLP · Adam Backprop</code>) и трёхголовый бустинг (<code>CatBoost Triad</code>) реально обучаются на исторической выборке и сохраняют свои веса на диск в <code>data/models/weights_*.json</code>, после чего соревнуются на отложенных данных против 6 алгоритмов.</p>
   </div>
-  <span class="pill success">{{ report.ml_backend_summary if report else 'ML ENGINE ACTIVE' }}</span>
 </section>
 
-<section class="panel backtest-panel">
+<section class="panel" style="margin-bottom: 1.25rem;">
   <div class="panel-head">
     <div>
-      <span class="eyebrow">ПУЛЬТ УПРАВЛЕНИЯ БЭКТЕСТОМ</span>
-      <h2>Выберите бумагу, рыночный сценарий и пороги принятия решений</h2>
+      <div class="eyebrow">ПУЛЬТ УПРАВЛЕНИЯ ОБУЧЕНИЕМ, БАЗОЙ СВЕЧЕЙ И БЭКТЕСТОМ</div>
+      <h2>Настройки рынка, весов модели и защиты капитала</h2>
     </div>
-    <span class="panel-counter">БЕЗ УТЕЧКИ БУДУЩЕГО (POINT-IN-TIME)</span>
+    <span class="pill positive">БД DUCKDB + ВЕСА В DATA/MODELS/</span>
   </div>
 
-  <form
-    id="synthetic-backtest-form"
-    method="post"
-    action="/backtest/run"
-    hx-post="/backtest/run"
-    hx-target="#synthetic-backtest-results"
-    hx-swap="outerHTML"
-    class="settings-grid"
-  >
-    <div class="field-block">
-      <label for="bt-instrument">Бумага из корзины</label>
-      <select id="bt-instrument" name="instrument_uid">
-        {% for item in instruments %}
-          <option value="{{ item.uid }}" {% if report and report.instrument_uid == item.uid %}selected{% endif %}>
-            {{ item.ticker }} · {{ item.name or item.uid }}
-          </option>
-        {% endfor %}
-      </select>
-      <small>Актив + поводырь индекс МосБиржи (IMOEX)</small>
+  <form id="bt-control-form" hx-post="/backtest/run" hx-target="#backtest-report-container" hx-swap="innerHTML">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" id="input-force-exchange-sync" name="force_exchange_sync" value="false">
+
+    <div class="grid-3">
+      <label class="field">
+        <span>Инструмент (акция MOEX)</span>
+        <select name="instrument_uid">
+          {% if instruments %}
+            {% for inst in instruments %}
+              <option value="{{ inst.uid }}" {% if inst.uid == params.instrument_uid %}selected{% endif %}>{{ inst.ticker }} ({{ inst.class_code }})</option>
+            {% endfor %}
+          {% else %}
+            <option value="uid-sber" selected>SBER (TQBR)</option>
+          {% endif %}
+        </select>
+        <small class="muted">Бумага из вашей корзины для обучения и проверки</small>
+      </label>
+
+      <label class="field">
+        <span>Источник свечей (БД DuckDB / Стресс-тест)</span>
+        <select name="scenario">
+          <option value="auto" {% if params.scenario == 'auto' %}selected{% endif %}>📦 Реальные свечи из БД DuckDB (MOEX ISS / T-Invest)</option>
+          <option value="cycle" {% if params.scenario == 'cycle' %}selected{% endif %}>🔄 Стресс-стенд: полный цикл (Рост → Пила → Обвал → Ралли)</option>
+          <option value="bull" {% if params.scenario == 'bull' %}selected{% endif %}>📈 Стресс-стенд: устойчивый бычий тренд с откатами</option>
+          <option value="chop" {% if params.scenario == 'chop' %}selected{% endif %}>〰️ Стресс-стенд: затяжной боковик («пила»)</option>
+          <option value="crash_recovery" {% if params.scenario == 'crash_recovery' %}selected{% endif %}>⚡ Стресс-стенд: резкий обвал и V-образный разворот</option>
+        </select>
+        <small class="muted">В режиме DuckDB свечи берутся из таблицы <code>candles</code></small>
+      </label>
+
+      <label class="field">
+        <span>Режим весов ИИ (<code>data/models/</code>)</span>
+        <select id="select-weights-mode" name="weights_mode">
+          <option value="auto" {% if params.weights_mode == 'auto' %}selected{% endif %}>🧠 Обучить на Train-выборке и сохранить веса на диск</option>
+          <option value="load_saved" {% if params.weights_mode == 'load_saved' %}selected{% endif %}>💾 Загрузить готовые веса с диска (без переобучения)</option>
+          <option value="retrain" {% if params.weights_mode == 'retrain' %}selected{% endif %}>🔄 Принудительно переобучить с нуля и перезаписать файл весов</option>
+        </select>
+        <small class="muted">Веса сохраняются в <code>data/models/weights_*.json</code></small>
+      </label>
+
+      <label class="field">
+        <span>Рабочий таймфрейм</span>
+        <select name="timeframe">
+          {% for tf, tf_desc in [('1h', '1 час (свинг / внутридня)'), ('1d', '1 день (позиционный)'), ('4h', '4 часа'), ('15m', '15 минут')] %}
+            <option value="{{ tf }}" {% if params.timeframe == tf %}selected{% endif %}>{{ tf_desc }}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">Шаг свечей для расчёта признаков и сделок</small>
+      </label>
+
+      <label class="field">
+        <span>Глубина окна (свечей из БД)</span>
+        <input type="number" name="bar_count" min="48" max="360" value="{{ params.bar_count }}">
+        <small class="muted">75% идёт на обучение (Train), 25% — честный экзамен (Out-of-Sample)</small>
+      </label>
+
+      <label class="field">
+        <span>Стартовый капитал (₽)</span>
+        <input type="number" step="10000" name="initial_capital" value="{{ params.initial_capital }}">
+        <small class="muted">Начальный депозит для всех 7 алгоритмов</small>
+      </label>
     </div>
 
-    <div class="field-block">
-      <label for="bt-scenario">Рыночный сценарий (источник котировок)</label>
-      <select id="bt-scenario" name="scenario">
-        {% set cur_scen = report.params.scenario if report else 'auto' %}
-        <option value="auto" {% if cur_scen == 'auto' %}selected{% endif %}>Авто: БД T-Invest / Полный цикл MOEX</option>
-        <option value="cycle" {% if cur_scen == 'cycle' %}selected{% endif %}>Полный цикл: Тренд → Пила → Обвал → Ралли</option>
-        <option value="bull" {% if cur_scen == 'bull' %}selected{% endif %}>Бычий рынок: волны роста с откатами</option>
-        <option value="chop" {% if cur_scen == 'chop' %}selected{% endif %}>Боковая «Пила»: проверка защиты от шума</option>
-        <option value="crash_recovery" {% if cur_scen == 'crash_recovery' %}selected{% endif %}>Обвал (Паника) и V-образный разворот</option>
-      </select>
-      <small>Позволяет проверить поведение 6 алгоритмов в разных фазах</small>
-    </div>
+    <details style="margin-top: 0.75rem; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; padding: 0.65rem 1rem;">
+      <summary style="cursor: pointer; font-weight: 600; color: var(--muted);">⚙️ Тонкие настройки порогов ИИ, барьеров ATR и гиперпараметров бустинга</summary>
+      <div class="grid-3" style="margin-top: 0.85rem;">
+        <label class="field">
+          <span>Мин. уверенность в тренде P(trend) &gt; A</span>
+          <input type="number" step="0.01" name="trend_threshold_a" value="{{ params.trend_threshold_a }}">
+          <small class="muted">Ниже этого порога бот считает рынок боковиком и ждёт в кэше</small>
+        </label>
 
-    <div class="field-block">
-      <label for="bt-tf">Таймфрейм свечей</label>
-      <select id="bt-tf" name="timeframe">
-        {% for tf_opt in ["5m", "15m", "1h", "4h", "1d"] %}
-          <option value="{{ tf_opt }}" {% if report and report.params.timeframe == tf_opt %}selected{% endif %}>
-            {{ tf_opt | upper }}
-          </option>
-        {% endfor %}
-      </select>
-      <small>Рабочий интервал закрытых свечей</small>
-    </div>
+        <label class="field">
+          <span>Мин. вероятность роста P(up|trend) &ge; B</span>
+          <input type="number" step="0.01" name="direction_threshold_b" value="{{ params.direction_threshold_b }}">
+          <small class="muted">Насколько модель должна верить в продолжение роста</small>
+        </label>
 
-    <div class="field-block">
-      <label for="bt-bars">Длина истории (свечей)</label>
-      <input id="bt-bars" type="number" name="bar_count" min="40" max="300" value="{{ report.params.bar_count if report else 120 }}">
-      <small>Первые 75% — обучение/отбор, 25% — чистый тест (Holdout)</small>
-    </div>
+        <label class="field">
+          <span>Порог тревоги разворота P(break) &ge; C</span>
+          <input type="number" step="0.01" name="break_exit_threshold" value="{{ params.break_exit_threshold }}">
+          <small class="muted">При превышении бот досрочно закрывает позицию</small>
+        </label>
 
-    <div class="field-block">
-      <label for="bt-cap">Стартовый капитал, ₽</label>
-      <input id="bt-cap" type="number" name="initial_capital" step="50000" value="{{ report.params.initial_capital if report else '1000000' }}">
-      <small>Одинаковый стартовый баланс для всех 6 алгоритмов</small>
-    </div>
+        <label class="field">
+          <span>Тейк-профит (в единицах ATR)</span>
+          <input type="number" step="0.1" name="k_tp" value="{{ params.k_tp }}">
+          <small class="muted">Верхний барьер фиксации прибыли</small>
+        </label>
 
-    <div class="field-block">
-      <label for="bt-horizon">Горизонт прогноза H (свечей)</label>
-      <input id="bt-horizon" type="number" name="horizon_bars" min="3" max="36" value="{{ report.params.horizon_bars if report else 8 }}">
-      <small>На сколько баров вперёд модель ждёт тейк или разворот</small>
-    </div>
+        <label class="field">
+          <span>Стоп-лосс (в единицах ATR)</span>
+          <input type="number" step="0.1" name="k_sl" value="{{ params.k_sl }}">
+          <small class="muted">Нижний защитный барьер ограничения убытка</small>
+        </label>
 
-    <div class="field-block">
-      <label for="bt-ktp">Цель прибыли Take-Profit (в ATR)</label>
-      <input id="bt-ktp" type="number" name="k_tp" step="0.1" min="0.5" max="6.0" value="{{ report.params.k_tp if report else '1.8' }}">
-      <small>При каком росте (в единицах волатильности) фиксировать прибыль</small>
-    </div>
+        <label class="field">
+          <span>Горизонт удержания H (баров)</span>
+          <input type="number" min="3" max="48" name="horizon_bars" value="{{ params.horizon_bars }}">
+          <small class="muted">Макс. время удержания одной свинг-сделки</small>
+        </label>
 
-    <div class="field-block">
-      <label for="bt-ksl">Защитный Stop-Loss (в ATR)</label>
-      <input id="bt-ksl" type="number" name="k_sl" step="0.1" min="0.3" max="5.0" value="{{ report.params.k_sl if report else '1.2' }}">
-      <small>Максимально допустимый откат против позиции</small>
-    </div>
+        <label class="field">
+          <span>Комиссия + Проскальзывание (б.п.)</span>
+          <input type="number" step="0.5" name="commission_bps" value="{{ params.commission_bps }}">
+          <small class="muted">Честный вычет биржевых издержек из каждой сделки</small>
+        </label>
 
-    <div class="field-block">
-      <label for="bt-a">Фильтр боковика: мин. P(тренд) &gt; a</label>
-      <input id="bt-a" type="number" name="trend_threshold_a" step="0.01" min="0.30" max="0.90" value="{{ report.params.trend_threshold_a if report else '0.52' }}">
-      <small>Если вероятность тренда ниже — бот сидит в кэше и пережидает «пилу»</small>
-    </div>
+        <label class="field">
+          <span>Глубина деревьев / Число итераций</span>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="number" min="3" max="6" name="catboost_depth" value="{{ params.catboost_depth }}" title="Глубина дерева">
+            <input type="number" min="15" max="100" name="catboost_iterations" value="{{ params.catboost_iterations }}" title="Итерации">
+          </div>
+          <small class="muted">Параметры ансамбля градиентного бустинга</small>
+        </label>
 
-    <div class="field-block">
-      <label for="bt-b">Уверенность в росте: P(рост|тренд) ≥ b</label>
-      <input id="bt-b" type="number" name="direction_threshold_b" step="0.01" min="0.50" max="0.90" value="{{ report.params.direction_threshold_b if report else '0.53' }}">
-      <small>Минимальная вероятность того, что тренд направлен вверх</small>
-    </div>
-
-    <div class="field-block">
-      <label for="bt-brk">Защита от разворота: макс. P(слом≤H)</label>
-      <input id="bt-brk" type="number" name="break_exit_threshold" step="0.01" min="0.35" max="0.95" value="{{ report.params.break_exit_threshold if report else '0.72' }}">
-      <small>Если риск скорого разворота выше — бот досрочно кроет сделку</small>
-    </div>
-
-    <div class="field-block">
-      <label for="bt-comm">Комиссия брокера и проскальзывание (bps)</label>
-      <div class="form-row">
-        <input type="number" name="commission_bps" step="0.5" min="0" max="50" value="{{ report.params.commission_bps if report else '5.0' }}" aria-label="Комиссия bps">
-        <input type="number" name="slippage_bps" step="0.5" min="0" max="50" value="{{ report.params.slippage_bps if report else '5.0' }}" aria-label="Проскальзывание bps">
-        <input type="hidden" name="catboost_depth" value="{{ report.params.catboost_depth if report else 4 }}">
-        <input type="hidden" name="catboost_iterations" value="{{ report.params.catboost_iterations if report else 36 }}">
+        <label class="field">
+          <span>Целевая волатильность позиции (σ*)</span>
+          <input type="number" step="0.001" name="target_volatility_pct" value="{{ params.target_volatility_pct }}">
+          <small class="muted">Масштабирование размера позиции под текущий риск</small>
+        </label>
       </div>
-      <small>5 bps = 0.05% за сделку (списывается у всех 6 алгоритмов)</small>
-    </div>
+    </details>
 
-    <div class="settings-submit">
-      <span>ОБУЧЕНИЕ CATBOOST TRIAD + HMM · ПЕРЕРАСЧЁТ 6 АЛГОРИТМОВ И ГРАФИКОВ</span>
-      <button type="submit" class="button primary">Запустить соревнование алгоритмов и бэктест</button>
+    <div class="action-row" style="margin-top: 1rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+      <button class="button primary" type="submit">▶ Запустить соревнование алгоритмов</button>
+      <button class="button" type="button" id="btn-retrain-models" title="Обучить 3-слойную нейросеть (Adam Backprop) и CatBoost с нуля и записать веса в data/models/">🧠 Переобучить нейросеть + бустинг и сохранить веса</button>
+      <button class="button" type="button" id="btn-sync-duckdb" title="Загрузить свежие исторические свечи с биржи MOEX ISS / T-Invest в локальную таблицу candles DuckDB">📥 Скачать свечи с биржи в БД DuckDB</button>
     </div>
   </form>
 </section>
 
-{% if report %}
-  {% include "partials/backtest_report.html" %}
-{% endif %}
+<div id="backtest-report-container">
+  {% include 'partials/backtest_report.html' %}
+</div>
 {% endblock %}

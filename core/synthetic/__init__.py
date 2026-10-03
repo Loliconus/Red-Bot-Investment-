@@ -17,6 +17,7 @@ from core.synthetic.benchmarks import (
     run_elastic_net_trend_benchmark,
     run_lightgbm_single_head_benchmark,
     run_ma_crossover_benchmark,
+    run_neural_mlp_benchmark,
     run_rsi_benchmark,
 )
 from core.synthetic.calibration import (
@@ -33,6 +34,12 @@ from core.synthetic.catboost_model import (
     ProbabilisticTriadPrediction,
     SingleHeadCatBoostClassifier,
     SyntheticCatBoostTriadModel,
+)
+from core.synthetic.checkpoint import (
+    ModelWeightsManifest,
+    checkpoint_file_path,
+    load_model_checkpoint,
+    save_model_checkpoint,
 )
 from core.synthetic.engine import (
     SyntheticStepRecord,
@@ -92,6 +99,10 @@ from core.synthetic.mlops import (
     compute_feature_psi,
     evaluate_drift_and_retraining_trigger,
 )
+from core.synthetic.neural_model import (
+    NeuralTrainingSummary,
+    TemporalMLPNetwork,
+)
 from core.synthetic.risk_engine import (
     MOEX_SECTOR_CLUSTERS,
     SyntheticDirection,
@@ -136,6 +147,8 @@ __all__ = [
     "HMMRegimePosterior",
     "L1TrendFilterResult",
     "L1TrendSegmentPoint",
+    "ModelWeightsManifest",
+    "NeuralTrainingSummary",
     "ObliviousTree",
     "OrderedTargetEncoder",
     "OverfittingAuditReport",
@@ -159,6 +172,7 @@ __all__ = [
     "SyntheticTraderEngine",
     "SyntheticTraderEvaluationReport",
     "TemporalFusionVariableSelector",
+    "TemporalMLPNetwork",
     "TFTSelectionOutput",
     "TripleBarrierConfig",
     "TripleBarrierEvent",
@@ -170,6 +184,7 @@ __all__ = [
     "build_purged_kfold_splits",
     "build_reliability_diagram",
     "build_triple_barrier_events",
+    "checkpoint_file_path",
     "compute_annualized_sharpe",
     "compute_brier_score",
     "compute_deflated_sharpe_ratio",
@@ -186,6 +201,7 @@ __all__ = [
     "fit_elastic_net_weights",
     "generate_reference_moex_series",
     "is_bar_closed_at",
+    "load_model_checkpoint",
     "partition_frozen_holdout",
     "resample_candles",
     "run_buy_and_hold_benchmark",
@@ -193,7 +209,9 @@ __all__ = [
     "run_feature_selection_pipeline",
     "run_lightgbm_single_head_benchmark",
     "run_ma_crossover_benchmark",
+    "run_neural_mlp_benchmark",
     "run_rsi_benchmark",
+    "save_model_checkpoint",
     "solve_l1_trend_filter",
     "timeframe_duration",
     "translate_reason_to_human",

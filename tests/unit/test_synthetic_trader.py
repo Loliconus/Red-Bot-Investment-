@@ -395,7 +395,7 @@ def test_mlops_psi_drift_benchmarks_and_tbank_archive_helpers() -> None:
 
 
 def test_full_synthetic_trader_engine_end_to_end() -> None:
-    """Полный сквозной прогон SyntheticTraderEngine и соревнование 6 алгоритмов."""
+    """Полный сквозной прогон SyntheticTraderEngine, сохранение весов и соревнование алгоритмов."""
     from core.synthetic.engine import generate_reference_moex_series
 
     candles, imoex = generate_reference_moex_series(
@@ -409,13 +409,32 @@ def test_full_synthetic_trader_engine_end_to_end() -> None:
         instrument_uid="uid-sber",
         ticker="SBER",
         imoex_candles=imoex,
+        weights_mode="retrain",
     )
     assert report.ticker == "SBER"
-    assert len(report.benchmarks) == 5
+    assert len(report.benchmarks) == 6
     assert report.trades_count >= 5
     assert len(report.completed_trades) == report.trades_count
     assert report.total_return_pct > Decimal("0")
     assert report.overfitting_audit.cpcv_n_splits > 0
     assert len(report.step_records) > 20
     assert report.human_summary != ""
+    assert report.weights_manifest is not None
+    assert report.weights_manifest.file_exists is True
+    assert report.weights_manifest.nn_total_parameters > 100
+    assert report.weights_manifest.nn_final_loss < report.weights_manifest.nn_initial_loss
+    assert report.weights_manifest.gbdt_total_trees > 10
+
+    # Проверяем честную загрузку сохранённых весов с диска без повторного обучения
+    engine_from_disk = SyntheticTraderEngine()
+    report_loaded = engine_from_disk.run_full_evaluation(
+        candles,
+        instrument_uid="uid-sber",
+        ticker="SBER",
+        imoex_candles=imoex,
+        weights_mode="load_saved",
+    )
+    assert report_loaded.weights_manifest is not None
+    assert report_loaded.weights_manifest.loaded_from_disk is True
+    assert report_loaded.total_return_pct == report.total_return_pct
 

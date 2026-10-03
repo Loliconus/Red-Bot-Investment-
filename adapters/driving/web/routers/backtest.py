@@ -1,4 +1,4 @@
-"""Интерактивный бэктест, соревнование алгоритмов и валидация «Синтетический трейдер» (GUI)."""
+"""Роутер экрана «Синтетический трейдер · Бэктест и Валидация» (`/backtest`)."""
 
 from __future__ import annotations
 
@@ -7,398 +7,435 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse
 
 from adapters.driving.web.dependencies import ContextDep, SessionDep, require_session
-from adapters.driving.web.render import render_page, render_partial
+from adapters.driving.web.render import render_page, templates
 from application.use_cases.run_backtest import (
     BacktestRunParameters,
     run_synthetic_backtest,
 )
-from core.synthetic import SyntheticTraderEvaluationReport, translate_reason_to_human
+from core.synthetic.engine import SyntheticTraderEvaluationReport
 
-router = APIRouter(tags=["backtest"], dependencies=[Depends(require_session)])
-
-ALGO_COLORS: dict[str, str] = {
-    "Buy & Hold IMOEX": "#64748b",
-    "LightGBM (Single-Head ML)": "#3b82f6",
-    "HistGBDT (Single-Head ML)": "#3b82f6",
-    "LightGBM / HistGBDT (Single-Head ML)": "#3b82f6",
-    "ElasticNet (Linear ML)": "#8b5cf6",
-    "MA Crossover (8/21)": "#f59e0b",
-    "RSI(14) Bot": "#10b981",
-}
+router = APIRouter(tags=["gui-backtest"], dependencies=[Depends(require_session)])
 
 
-def _safe_decimal(value: Any, default: Decimal, *, lo: Decimal, hi: Decimal) -> Decimal:
-    try:
-        parsed = Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError):
-        return default
-    return min(hi, max(lo, parsed))
-
-
-def _safe_int(value: Any, default: int, *, lo: int, hi: int) -> int:
-    try:
-        parsed = int(float(str(value)))
-    except (ValueError, TypeError):
-        return default
-    return min(hi, max(lo, parsed))
-
-
-def _align_pct_curve(
-    equity_curve: tuple[Decimal, ...],
-    initial_capital: Decimal,
+def _pad_or_trim_series(
+    values: list[Decimal],
     target_len: int,
+    initial_capital: Decimal,
 ) -> list[float]:
-    """Преобразует кривую капитала в кумулятивные проценты доходности длины ``target_len``."""
-    if not equity_curve or initial_capital <= Decimal("0") or target_len <= 0:
-        return [0.0] * max(target_len, 1)
-    init_f = float(initial_capital)
-    pcts = [round((float(eq) / init_f - 1.0) * 100.0, 2) for eq in equity_curve]
+    if not values or initial_capital <= Decimal("0"):
+        return [0.0] * target_len
+    pcts = [float((v - initial_capital) / initial_capital * Decimal("100")) for v in values]
     if len(pcts) >= target_len:
-        return pcts[:target_len]
-    return pcts + [pcts[-1]] * (target_len - len(pcts))
+        return [round(x, 3) for x in pcts[-target_len:]]
+    pad_len = target_len - len(pcts)
+    padded = pcts + [pcts[-1]] * pad_len
+    return [round(x, 3) for x in padded]
 
 
-def _serialize_report(
-    report: SyntheticTraderEvaluationReport,
-    params: BacktestRunParameters,
+def _svg_polyline_points(
+    xs: list[float],
+    ys: list[float],
+) -> str:
+    return " ".join(f"{xs[i]:.1f},{ys[i]:.1f}" for i in range(min(len(xs), len(ys))))
+
+
+def _build_svg_arena_bundle(
+    steps: list[Any],
+    competing_series: list[dict[str, Any]],
+    train_split_idx: int,
+    thr_a_pct: float,
+    thr_b_pct: float,
+    thr_break_pct: float,
+    nn_train_loss: list[float],
+    nn_val_loss: list[float],
 ) -> dict[str, Any]:
-    """Преобразует доменный отчёт «Синтетического трейдера» в контекст шаблона и JSON графиков."""
-    shap_items = [
-        {"feature": k, "value": f"{v:+.4f}", "abs_pct": min(100, int(abs(v) * 220))}
-        for k, v in report.latest_triad.top_shap_contributors.items()
+    """Строит готовые серверные SVG-координаты для 4 графиков (работают даже без JS/CSP)."""
+    n = max(len(steps), 2)
+    pad_l = 58.0
+    pad_r = 24.0
+    w_total = 1000.0
+    plot_w = w_total - pad_l - pad_r
+
+    xs = [
+        pad_l + (i / max(n - 1, 1)) * plot_w
+        for i in range(len(steps))
     ]
-    cal_list = []
-    for head_name, cal in report.calibration_reports.items():
-        cal_list.append(
+    split_clamped = min(max(train_split_idx, 1), max(len(steps) - 1, 1))
+    split_x = round(pad_l + (split_clamped / max(n - 1, 1)) * plot_w, 1)
+
+    # 1. График соревнования алгоритмов (Equity Curves, height=310)
+    h1 = 310.0
+    p1_top = 24.0
+    p1_bot = 28.0
+    p1_h = h1 - p1_top - p1_bot
+
+    all_eq_vals = [0.0]
+    for s in competing_series:
+        all_eq_vals.extend(float(v) for v in s["values"])
+    eq_min = min(all_eq_vals)
+    eq_max = max(all_eq_vals)
+    eq_span = max(eq_max - eq_min, 1.5)
+    eq_min -= eq_span * 0.08
+    eq_max += eq_span * 0.10
+    eq_span = max(eq_max - eq_min, 1.0)
+
+    def _y_eq(val: float) -> float:
+        return p1_top + (1.0 - (val - eq_min) / eq_span) * p1_h
+
+    eq_grid: list[dict[str, Any]] = []
+    for g in range(6):
+        val = eq_max - (g / 5.0) * eq_span
+        eq_grid.append(
             {
-                "head_name": head_name,
-                "method": cal.method,
-                "temperature": f"{cal.temperature:.2f}",
-                "brier_raw": f"{cal.brier_score_raw:.4f}",
-                "brier_cal": f"{cal.brier_score_calibrated:.4f}",
-                "bss": f"{cal.brier_skill_score:+.3f}",
-                "ece_raw": f"{cal.ece_raw:.4f}",
-                "ece_cal": f"{cal.ece_calibrated:.4f}",
-                "bins": [
-                    {
-                        "range": f"{b.lower_bound:.1f}–{b.upper_bound:.1f}",
-                        "pred": f"{b.mean_predicted * 100:.1f}%",
-                        "emp": f"{b.empirical_frequency * 100:.1f}%",
-                        "count": b.sample_count,
-                    }
-                    for b in cal.reliability_bins
-                    if b.sample_count > 0
-                ],
+                "y": round(_y_eq(val), 1),
+                "label": f"{'+' if val > 0 else ''}{val:.1f}%",
+            }
+        )
+    zero_y = round(_y_eq(0.0), 1)
+
+    svg_series: list[dict[str, Any]] = []
+    bot_ys: list[float] = []
+    for idx, s in enumerate(competing_series):
+        vals: list[float] = [float(v) for v in s["values"]]
+        ys = [_y_eq(v) for v in vals]
+        if idx == 0:
+            bot_ys = ys
+        pts = _svg_polyline_points(xs, ys)
+        area_pts = (
+            f"{xs[0]:.1f},{zero_y:.1f} {pts} {xs[-1]:.1f},{zero_y:.1f}"
+            if xs and ys
+            else ""
+        )
+        svg_series.append(
+            {
+                "id": f"algo-{idx}",
+                "name": s["name"],
+                "color": s["color"],
+                "width": s["width"],
+                "dash": "6,4" if s.get("dash") else "",
+                "is_primary": idx == 0,
+                "points": pts,
+                "area_points": area_pts,
+                "final_val": f"{'+' if vals[-1] >= 0 else ''}{vals[-1]:.2f}%" if vals else "0%",
+                "final_y": round(ys[-1], 1) if ys else zero_y,
             }
         )
 
-    bench_rows = [
-        {
-            "name": b.name,
-            "category": b.category,
-            "description": b.description,
-            "color": ALGO_COLORS.get(b.name, "#0ea5e9"),
-            "total_return_pct": str(b.total_return_pct),
-            "is_positive": b.total_return_pct >= Decimal("0"),
-            "beats_bot": b.total_return_pct > report.total_return_pct,
-            "diff_vs_bot": str(
-                (report.total_return_pct - b.total_return_pct).quantize(Decimal("0.01"))
-            ),
-            "max_drawdown_pct": str(b.max_drawdown_pct),
-            "sharpe": f"{b.sharpe_ratio:.2f}",
-            "trades": b.trades_count,
-            "final_equity": (
-                str(b.equity_curve[-1]) if b.equity_curve else str(params.initial_capital)
-            ),
-        }
-        for b in report.benchmarks
-    ]
-
-    psi_items = [
-        {
-            "feature": k,
-            "psi": f"{v:.4f}",
-            "status": "CRITICAL" if v >= 0.20 else ("WARN" if v >= 0.10 else "OK"),
-        }
-        for k, v in list(report.drift_diagnostic.psi_by_feature.items())[:10]
-    ]
-
-    trade_rows = [
-        {
-            "trade_id": tr.trade_id,
-            "direction": tr.direction,
-            "entry_time": tr.entry_timestamp.strftime("%d.%m %H:%M"),
-            "exit_time": tr.exit_timestamp.strftime("%d.%m %H:%M"),
-            "entry_price": str(tr.entry_price),
-            "exit_price": str(tr.exit_price),
-            "bars_held": tr.bars_held,
-            "position_pct": f"{tr.position_fraction * Decimal('100'):.0f}%",
-            "pnl_pct": f"{'+' if tr.pnl_pct >= Decimal('0') else ''}{tr.pnl_pct}%",
-            "pnl_rub": f"{'+' if tr.pnl_rub >= Decimal('0') else ''}{tr.pnl_rub} ₽",
-            "is_win": tr.pnl_rub >= Decimal("0"),
-            "entry_reason": tr.entry_reason,
-            "exit_reason": tr.exit_reason,
-            "exit_code": tr.exit_code,
-        }
-        for tr in report.completed_trades
-    ]
-
-    recent_steps = [
-        {
-            "timestamp": st.timestamp.strftime("%Y-%m-%d %H:%M"),
-            "close_price": str(st.close_price),
-            "l1_trend_price": str(st.l1_trend_price),
-            "l1_slope": f"{st.l1_slope:+.5f}",
-            "hmm_regime": st.hmm_regime.upper(),
-            "p_trend": f"{st.p_trend * 100:.1f}%",
-            "p_up": f"{st.p_up_given_trend * 100:.1f}%",
-            "p_break": f"{st.p_break_within_h * 100:.1f}%",
-            "direction": st.direction.value.upper(),
-            "position_fraction": f"{st.position_fraction * Decimal('100'):.1f}%",
-            "equity": str(st.equity),
-            "blocked_reason": st.blocked_reason or "ACTIVE_SIGNAL",
-            "human_explanation": st.human_explanation,
-            "signal_action": st.signal_action,
-            "signal_label": st.signal_label,
-        }
-        for st in report.step_records[-30:]
-    ]
-
-    # Формируем полный синхронный пакет данных для 3 интерактивных графиков
-    n_steps = len(report.step_records)
-    init_cap = report.initial_capital
-    bot_eq_tuple = tuple(st.equity for st in report.step_records)
-    bot_curve_pct = _align_pct_curve(bot_eq_tuple, init_cap, n_steps)
-
-    bot_sign = "+" if report.total_return_pct >= Decimal("0") else ""
-    algorithms_chart = [
-        {
-            "id": "synthetic_trader",
-            "name": "Синтетический трейдер (CatBoost Triad + HMM)",
-            "color": "#e11d48",
-            "width": 3.2,
-            "return_pct": f"{bot_sign}{report.total_return_pct}%",
-            "max_dd_pct": f"{report.max_drawdown_pct}%",
-            "trades": report.trades_count,
-            "curve_pct": bot_curve_pct,
-        }
-    ]
-    for b in report.benchmarks:
-        b_sign = "+" if b.total_return_pct >= Decimal("0") else ""
-        algorithms_chart.append(
-            {
-                "id": b.name.lower().replace(" ", "_"),
-                "name": b.name,
-                "color": ALGO_COLORS.get(b.name, "#0ea5e9"),
-                "width": 1.9,
-                "return_pct": f"{b_sign}{b.total_return_pct}%",
-                "max_dd_pct": f"{b.max_drawdown_pct}%",
-                "trades": b.trades_count,
-                "curve_pct": _align_pct_curve(b.equity_curve, init_cap, n_steps),
-            }
-        )
-
-    chart_signals = []
-    for idx, st in enumerate(report.step_records):
-        if st.signal_action in {"BUY", "EXIT"}:
-            chart_signals.append(
+    eq_markers: list[dict[str, Any]] = []
+    for i, st in enumerate(steps):
+        if st.signal_action in {"BUY", "EXIT"} and i < len(xs) and i < len(bot_ys):
+            eq_markers.append(
                 {
-                    "bar": idx,
+                    "x": round(xs[i], 1),
+                    "y": round(bot_ys[i], 1),
                     "action": st.signal_action,
-                    "price": float(st.close_price),
+                    "color": "#22c55e" if st.signal_action == "BUY" else "#c084fc",
                     "label": st.signal_label,
-                    "reason": st.human_explanation,
-                    "time": st.timestamp.strftime("%d.%m %H:%M"),
                 }
             )
 
-    chart_payload = {
-        "ticker": report.ticker,
-        "timeframe": report.timeframe,
-        "timestamps": [st.timestamp.strftime("%d.%m %H:%M") for st in report.step_records],
-        "prices": [round(float(st.close_price), 2) for st in report.step_records],
-        "l1_trend": [round(float(st.l1_trend_price), 2) for st in report.step_records],
-        "regimes": [st.hmm_regime.upper() for st in report.step_records],
-        "p_trend": [round(st.p_trend * 100.0, 1) for st in report.step_records],
-        "p_up": [round(st.p_up_given_trend * 100.0, 1) for st in report.step_records],
-        "p_break": [round(st.p_break_within_h * 100.0, 1) for st in report.step_records],
-        "explanations": [st.human_explanation for st in report.step_records],
-        "thr_a": round(float(params.trend_threshold_a) * 100.0, 1),
-        "thr_b": round(float(params.direction_threshold_b) * 100.0, 1),
-        "thr_break": round(float(params.break_exit_threshold) * 100.0, 1),
-        "signals": chart_signals,
-        "algorithms": algorithms_chart,
-    }
+    # 2. График цены, тренда L1, фаз HMM и сделок (height=290)
+    h2 = 290.0
+    p2_top = 24.0
+    p2_bot = 30.0
+    p2_h = h2 - p2_top - p2_bot
 
-    pnl_rub_val = (report.final_equity - report.initial_capital).quantize(Decimal("0.01"))
-    pnl_rub_str = f"{'+' if pnl_rub_val >= Decimal('0') else ''}{pnl_rub_val} ₽"
+    prices = [float(st.close_price) for st in steps]
+    l1_vals = [float(st.l1_trend_price) for st in steps]
+    p_all = (prices + l1_vals) if prices else [100.0]
+    p_min = min(p_all)
+    p_max = max(p_all)
+    p_span = max(p_max - p_min, 1.0)
+    p_min -= p_span * 0.10
+    p_max += p_span * 0.12
+    p_span = max(p_max - p_min, 1.0)
+
+    def _y_price(val: float) -> float:
+        return p2_top + (1.0 - (val - p_min) / p_span) * p2_h
+
+    price_grid: list[dict[str, Any]] = []
+    for g in range(5):
+        val = p_max - (g / 4.0) * p_span
+        price_grid.append({"y": round(_y_price(val), 1), "label": f"{val:.1f} ₽"})
+
+    price_ys = [_y_price(v) for v in prices]
+    l1_ys = [_y_price(v) for v in l1_vals]
+    price_points = _svg_polyline_points(xs, price_ys)
+    l1_points = _svg_polyline_points(xs, l1_ys)
+
+    col_w = round(plot_w / max(len(steps), 1) + 0.8, 2)
+    regime_bands: list[dict[str, Any]] = []
+    holding_bars: list[dict[str, Any]] = []
+    trade_pins: list[dict[str, Any]] = []
+
+    for i, st in enumerate(steps):
+        rx = round(xs[i] - col_w / 2.0, 1)
+        if st.hmm_regime == "panic":
+            r_fill = "rgba(239, 68, 68, 0.20)"
+        elif st.hmm_regime == "trend":
+            r_fill = "rgba(16, 185, 129, 0.10)"
+        else:
+            r_fill = "rgba(245, 158, 11, 0.08)"
+        regime_bands.append({"x": rx, "w": col_w, "fill": r_fill})
+
+        pos_pct = float(st.position_fraction)
+        if pos_pct > 0.01:
+            holding_bars.append({"x": rx, "w": col_w})
+
+        if st.signal_action == "BUY":
+            px = round(xs[i], 1)
+            py = round(price_ys[i], 1)
+            tri = f"{px:.1f},{py + 4:.1f} {px - 7:.1f},{py + 18:.1f} {px + 7:.1f},{py + 18:.1f}"
+            trade_pins.append(
+                {
+                    "x": px,
+                    "y": py,
+                    "tri": tri,
+                    "label_y": round(min(py + 31.0, h2 - 8.0), 1),
+                    "color": "#22c55e",
+                    "text": f"▲ КУПИЛ {float(st.close_price):.1f}₽",
+                }
+            )
+        elif st.signal_action == "EXIT":
+            px = round(xs[i], 1)
+            py = round(price_ys[i], 1)
+            tri = f"{px:.1f},{py - 4:.1f} {px - 7:.1f},{py - 18:.1f} {px + 7:.1f},{py - 18:.1f}"
+            is_loss = "-" in (st.signal_label or "")
+            trade_pins.append(
+                {
+                    "x": px,
+                    "y": py,
+                    "tri": tri,
+                    "label_y": round(max(py - 23.0, 14.0), 1),
+                    "color": "#ef4444" if is_loss else "#c084fc",
+                    "text": f"▼ {st.signal_label}",
+                }
+            )
+
+    # 3. График вероятностей 3 голов (height=210)
+    h3 = 210.0
+    p3_top = 18.0
+    p3_bot = 26.0
+    p3_h = h3 - p3_top - p3_bot
+
+    def _y_prob(pct_val: float) -> float:
+        return p3_top + (1.0 - min(max(pct_val, 0.0), 100.0) / 100.0) * p3_h
+
+    p_tr_pts = _svg_polyline_points(xs, [_y_prob(st.p_trend * 100.0) for st in steps])
+    p_up_pts = _svg_polyline_points(xs, [_y_prob(st.p_up_given_trend * 100.0) for st in steps])
+    p_br_pts = _svg_polyline_points(xs, [_y_prob(st.p_break_within_h * 100.0) for st in steps])
+
+    # Подписи оси времени X
+    x_ticks: list[dict[str, Any]] = []
+    tick_step = max(1, len(steps) // 7)
+    for i in range(0, len(steps), tick_step):
+        x_ticks.append(
+            {
+                "x": round(xs[i], 1),
+                "label": steps[i].timestamp.strftime("%m-%d %H:%M"),
+            }
+        )
+
+    # 4. График обучения нейросети по эпохам (Loss Curve, 520x165)
+    lw = 520.0
+    lh = 165.0
+    lp_l = 46.0
+    lp_r = 16.0
+    lp_t = 16.0
+    lp_b = 24.0
+    n_ep = max(len(nn_train_loss), 2)
+    l_xs = [lp_l + (i / max(n_ep - 1, 1)) * (lw - lp_l - lp_r) for i in range(len(nn_train_loss))]
+    l_all = (nn_train_loss + nn_val_loss) if nn_train_loss else [0.693, 0.45]
+    l_min = max(0.05, min(l_all) * 0.92)
+    l_max = max(l_all) * 1.05
+    l_span = max(l_max - l_min, 0.05)
+
+    def _y_loss(v: float) -> float:
+        return lp_t + (1.0 - (v - l_min) / l_span) * (lh - lp_t - lp_b)
+
+    tr_loss_pts = _svg_polyline_points(l_xs, [_y_loss(v) for v in nn_train_loss])
+    val_loss_pts = _svg_polyline_points(l_xs, [_y_loss(v) for v in nn_val_loss])
 
     return {
-        "instrument_uid": report.instrument_uid,
-        "ticker": report.ticker,
-        "timeframe": report.timeframe,
-        "scenario": params.scenario,
-        "initial_capital": str(report.initial_capital),
-        "final_equity": str(report.final_equity),
-        "pnl_rub": pnl_rub_str,
-        "total_return_pct": str(report.total_return_pct),
-        "is_profitable": report.total_return_pct >= Decimal("0"),
-        "max_drawdown_pct": str(report.max_drawdown_pct),
-        "oos_sharpe": f"{report.oos_sharpe_ratio:.2f}",
-        "win_rate_pct": str(report.win_rate_pct),
-        "profit_factor": str(report.profit_factor),
-        "trades_count": report.trades_count,
-        "ml_backend_summary": report.ml_backend_summary,
-        "human_summary": report.human_summary,
-        "completed_trades": trade_rows,
-        "chart_json": json.dumps(chart_payload, ensure_ascii=False),
-        "triad": {
-            "p_trend_pct": f"{report.latest_triad.p_trend * 100:.1f}",
-            "p_up_pct": f"{report.latest_triad.p_up_given_trend * 100:.1f}",
-            "p_break_pct": f"{report.latest_triad.p_break_within_h * 100:.1f}",
-            "raw_p_trend_pct": f"{report.latest_triad.raw_p_trend * 100:.1f}",
-            "raw_p_up_pct": f"{report.latest_triad.raw_p_up_given_trend * 100:.1f}",
-            "raw_p_break_pct": f"{report.latest_triad.raw_p_break_within_h * 100:.1f}",
-            "directional_edge": f"{report.latest_triad.expected_directional_edge:+.3f}",
-            "confidence_edge": f"{report.latest_triad.confidence_adjusted_edge:+.3f}",
-            "shap": shap_items,
+        "split_x": split_x,
+        "pad_l": pad_l,
+        "w_total": w_total,
+        "plot_w": plot_w,
+        "x_ticks": x_ticks,
+        "equity": {
+            "h": h1,
+            "grid": eq_grid,
+            "zero_y": zero_y,
+            "series": svg_series,
+            "markers": eq_markers,
         },
-        "hmm": {
-            "dominant_regime": report.latest_hmm.dominant_regime.value.upper(),
-            "prob_trend_pct": f"{report.latest_hmm.prob_trend * 100:.1f}",
-            "prob_chop_pct": f"{report.latest_hmm.prob_chop * 100:.1f}",
-            "prob_panic_pct": f"{report.latest_hmm.prob_panic * 100:.1f}",
-            "expected_duration": f"{report.latest_hmm.expected_duration_bars:.1f}",
-            "is_trading_banned": report.latest_hmm.is_trading_banned,
+        "price": {
+            "h": h2,
+            "grid": price_grid,
+            "price_points": price_points,
+            "l1_points": l1_points,
+            "regime_bands": regime_bands,
+            "holding_bars": holding_bars,
+            "trade_pins": trade_pins,
         },
-        "l1_filter": {
-            "lambda_reg": f"{report.l1_trend_summary.lambda_reg:.2f}",
-            "knots_count": len(report.l1_trend_summary.knot_indices),
-            "residual_std": f"{report.l1_trend_summary.residual_std:.5f}",
-            "dual_gap": f"{report.l1_trend_summary.dual_gap:.2e}",
-        },
-        "risk_decision": {
-            "direction": report.latest_risk_decision.direction.value.upper(),
-            "allow_entry": report.latest_risk_decision.allow_entry,
-            "recommended_lots": report.latest_risk_decision.recommended_lots,
-            "position_fraction_pct": (
-                f"{report.latest_risk_decision.position_fraction * Decimal('100'):.2f}"
-            ),
-            "stop_loss": str(report.latest_risk_decision.stop_loss_price),
-            "take_profit": str(report.latest_risk_decision.take_profit_price),
-            "trailing_stop": str(report.latest_risk_decision.trailing_stop_price),
-            "vol_scalar": str(report.latest_risk_decision.volatility_scalar),
-            "break_scalar": str(report.latest_risk_decision.break_penalty_scalar),
-            "blocked_reason": report.latest_risk_decision.blocked_reason or "Разрешён вход",
-            "human_reason": translate_reason_to_human(report.latest_risk_decision.blocked_reason),
-        },
-        "feature_selection": {
-            "initial_count": len(report.feature_selection.initial_features),
-            "enet_count": len(report.feature_selection.elastic_net_survivors),
-            "stability_count": len(report.feature_selection.stability_survivors),
-            "final_count": len(report.feature_selection.final_selected_features),
-            "selected_features": list(report.feature_selection.final_selected_features),
-            "dropped_collinear": [
-                {"dropped": a, "kept": b, "corr": f"{c:+.3f}"}
-                for a, b, c in report.feature_selection.dropped_collinear_pairs[:8]
+        "prob": {
+            "h": h3,
+            "grid": [
+                {"y": round(_y_prob(100.0), 1), "label": "100%"},
+                {"y": round(_y_prob(75.0), 1), "label": "75%"},
+                {"y": round(_y_prob(50.0), 1), "label": "50%"},
+                {"y": round(_y_prob(25.0), 1), "label": "25%"},
+                {"y": round(_y_prob(0.0), 1), "label": "0%"},
             ],
+            "thr_entry_y": round(_y_prob(max(thr_a_pct, thr_b_pct)), 1),
+            "thr_break_y": round(_y_prob(thr_break_pct), 1),
+            "p_trend_points": p_tr_pts,
+            "p_up_points": p_up_pts,
+            "p_break_points": p_br_pts,
         },
-        "calibration": cal_list,
-        "validation": {
-            "cpcv_splits": report.overfitting_audit.cpcv_n_splits,
-            "cpcv_paths": report.overfitting_audit.cpcv_n_paths,
-            "cpcv_mean_sharpe": f"{report.overfitting_audit.cpcv_mean_oos_sharpe:.2f}",
-            "cpcv_std_sharpe": f"{report.overfitting_audit.cpcv_std_oos_sharpe:.2f}",
-            "pbo_pct": f"{report.overfitting_audit.pbo_probability * 100:.1f}%",
-            "pbo_logit": f"{report.overfitting_audit.pbo_logit_median:+.3f}",
-            "dsr_pct": f"{report.overfitting_audit.deflated_sharpe_ratio * 100:.1f}%",
-            "null_sr0": f"{report.overfitting_audit.expected_max_null_sharpe:.3f}",
-            "n_trials": report.overfitting_audit.n_trials_tested,
-            "white_rc_pvalue": f"{report.overfitting_audit.white_reality_check_pvalue:.3f}",
-            "hansen_spa_pvalue": f"{report.overfitting_audit.hansen_spa_pvalue:.3f}",
-            "passes_gate": report.overfitting_audit.passes_statistical_gate,
-            "dev_samples": len(report.holdout_partition.dev_indices),
-            "holdout_samples": len(report.holdout_partition.holdout_indices),
-            "holdout_cutoff": report.holdout_partition.cutoff_timestamp.strftime("%Y-%m-%d %H:%M"),
-        },
-        "benchmarks": bench_rows,
-        "mlops": {
-            "dataset_id": report.dataset_manifest.dataset_id,
-            "sha256_short": report.dataset_manifest.sha256_digest[:16],
-            "schema_version": report.dataset_manifest.feature_schema_version,
-            "bar_count": report.dataset_manifest.bar_count,
-            "run_id": report.experiment_record.run_id,
-            "beats_all_benchmarks": report.experiment_record.beats_all_benchmarks,
-            "shadow_mode_ready": report.experiment_record.shadow_mode_ready,
-            "drift_status": report.drift_diagnostic.overall_status.value.upper(),
-            "max_psi": f"{report.drift_diagnostic.max_psi:.4f}",
-            "mean_psi": f"{report.drift_diagnostic.mean_psi:.4f}",
-            "retrain_triggered": report.drift_diagnostic.should_trigger_retraining,
-            "retrain_reason": (
-                report.drift_diagnostic.retraining_reason or "Распределение стабильно"
-            ),
-            "psi_items": psi_items,
-        },
-        "steps": recent_steps,
-        "params": {
-            "instrument_uid": params.instrument_uid,
-            "timeframe": params.timeframe,
-            "scenario": params.scenario,
-            "bar_count": params.bar_count,
-            "initial_capital": str(params.initial_capital),
-            "commission_bps": str(params.commission_bps),
-            "slippage_bps": str(params.slippage_bps),
-            "horizon_bars": params.horizon_bars,
-            "k_tp": str(params.k_tp),
-            "k_sl": str(params.k_sl),
-            "trend_threshold_a": str(params.trend_threshold_a),
-            "direction_threshold_b": str(params.direction_threshold_b),
-            "break_exit_threshold": str(params.break_exit_threshold),
-            "catboost_depth": params.catboost_depth,
-            "catboost_iterations": params.catboost_iterations,
+        "loss": {
+            "w": lw,
+            "h": lh,
+            "train_points": tr_loss_pts,
+            "val_points": val_loss_pts,
+            "y_top_label": f"{l_max:.3f}",
+            "y_mid_label": f"{(l_max + l_min) / 2.0:.3f}",
+            "y_bot_label": f"{l_min:.3f}",
+            "epochs": len(nn_train_loss),
         },
     }
 
 
-def _resolve_ticker(context: Any, instrument_uid: str) -> str:
-    for inst in context.tradable_instruments:
-        if inst.uid == instrument_uid:
-            return str(inst.ticker)
-    return "SBER"
+def _build_chart_payload(
+    report: SyntheticTraderEvaluationReport,
+    params: BacktestRunParameters,
+) -> tuple[str, dict[str, Any]]:
+    """Сериализует данные и строит серверные SVG-графики соревнования алгоритмов."""
+    steps = list(report.step_records)
+    n_steps = len(steps)
+    cap = report.initial_capital
+
+    bot_ret_pct = [
+        round(float((st.equity - cap) / cap * Decimal("100")), 3) for st in steps
+    ]
+
+    palette = {
+        "Buy & Hold IMOEX": "#9ca3af",
+        "Neural MLP (Adam 3-Layer)": "#06b6d4",
+        "LightGBM (Single-Head ML)": "#a855f7",
+        "HistGBDT (Single-Head ML)": "#a855f7",
+        "ElasticNet (Linear ML)": "#3b82f6",
+        "MA Crossover (8/21)": "#eab308",
+        "RSI(14) Mean-Reversion": "#10b981",
+    }
+
+    competing_series: list[dict[str, Any]] = [
+        {
+            "name": "Синтетический трейдер (CatBoost 3-Head + HMM)",
+            "color": "#ff4d4d",
+            "width": 3.2,
+            "dash": False,
+            "values": bot_ret_pct,
+            "total_return_pct": float(report.total_return_pct),
+            "max_dd_pct": float(report.max_drawdown_pct),
+            "sharpe": round(float(report.oos_sharpe_ratio), 2),
+            "trades": report.trades_count,
+            "description": (
+                "Ансамбль 3 голов CatBoost + 3-слойная нейросеть + фильтр тренда ℓ₁ "
+                "+ защита от обвалов HMM"
+            ),
+        }
+    ]
+
+    for bm in report.benchmarks:
+        bm_series = _pad_or_trim_series(list(bm.equity_curve), n_steps, cap)
+        competing_series.append(
+            {
+                "name": bm.name,
+                "color": palette.get(bm.name, "#60a5fa"),
+                "width": 2.1,
+                "dash": bm.category == "passive",
+                "values": bm_series,
+                "total_return_pct": float(bm.total_return_pct),
+                "max_dd_pct": float(bm.max_drawdown_pct),
+                "sharpe": round(float(bm.sharpe_ratio), 2),
+                "trades": bm.trades_count,
+                "description": bm.description,
+            }
+        )
+
+    wm = report.weights_manifest
+    nn_tr_loss = list(wm.nn_train_loss_curve) if wm else [0.693, 0.52, 0.44]
+    nn_val_loss = list(wm.nn_val_loss_curve) if wm else [0.693, 0.55, 0.48]
+
+    svg_bundle = _build_svg_arena_bundle(
+        steps=steps,
+        competing_series=competing_series,
+        train_split_idx=report.train_split_index,
+        thr_a_pct=round(float(params.trend_threshold_a) * 100.0, 1),
+        thr_b_pct=round(float(params.direction_threshold_b) * 100.0, 1),
+        thr_break_pct=round(float(params.break_exit_threshold) * 100.0, 1),
+        nn_train_loss=nn_tr_loss,
+        nn_val_loss=nn_val_loss,
+    )
+
+    payload = {
+        "ticker": report.ticker,
+        "timeframe": report.timeframe,
+        "train_split_index": report.train_split_index,
+        "thresholds": {
+            "trend_a": round(float(params.trend_threshold_a) * 100, 1),
+            "dir_b": round(float(params.direction_threshold_b) * 100, 1),
+            "break_exit": round(float(params.break_exit_threshold) * 100, 1),
+        },
+        "timestamps": [st.timestamp.strftime("%m-%d %H:%M") for st in steps],
+        "prices": [round(float(st.close_price), 2) for st in steps],
+        "l1_trend": [round(float(st.l1_trend_price), 2) for st in steps],
+        "p_trend": [round(st.p_trend * 100, 1) for st in steps],
+        "p_up": [round(st.p_up_given_trend * 100, 1) for st in steps],
+        "p_break": [round(st.p_break_within_h * 100, 1) for st in steps],
+        "regimes": [st.hmm_regime for st in steps],
+        "positions": [round(float(st.position_fraction) * 100, 1) for st in steps],
+        "signals": [st.signal_action or "" for st in steps],
+        "signal_labels": [st.signal_label for st in steps],
+        "explanations": [st.human_explanation for st in steps],
+        "series": competing_series,
+    }
+    return json.dumps(payload, ensure_ascii=False), svg_bundle
 
 
 @router.get("/backtest")
 async def page(request: Request, context: ContextDep) -> Any:
-    default_uid = (
-        context.tradable_instruments[0].uid if context.tradable_instruments else "uid-sber"
+    default_inst = next((i for i in context.instruments if not i.is_benchmark), None)
+    default_params = BacktestRunParameters(
+        instrument_uid=default_inst.uid if default_inst else "uid-sber",
+        ticker=default_inst.ticker if default_inst else "SBER",
+        timeframe="1h",
+        scenario="auto",
+        bar_count=120,
     )
-    uid = request.query_params.get("instrument_uid", default_uid)
-    tf = request.query_params.get("timeframe", "1h")
-    scen = request.query_params.get("scenario", "auto")
-    params = BacktestRunParameters(
-        instrument_uid=uid,
-        ticker=_resolve_ticker(context, uid),
-        timeframe=tf if tf in {"5m", "15m", "1h", "4h", "1d"} else "1h",
-        scenario=scen if scen in {"auto", "cycle", "bull", "chop", "crash_recovery"} else "auto",
-    )
-    report = await run_synthetic_backtest(context, params)
+    report = await run_synthetic_backtest(context, default_params)
+    chart_json, svg_bundle = _build_chart_payload(report, default_params)
     return render_page(
         request,
         "pages/backtest.html",
-        title="Синтетический трейдер — Соревнование алгоритмов и Бэктест",
+        title="Синтетический трейдер · Соревнование алгоритмов",
         section="backtest",
         data={
-            "instruments": context.tradable_instruments,
-            "report": _serialize_report(report, params),
+            "params": default_params,
+            "report": report,
+            "chart_json": chart_json,
+            "svg": svg_bundle,
+            "instruments": [i for i in context.instruments if not i.is_benchmark],
         },
     )
 
 
-@router.post("/backtest/run")
-@router.post("/api/backtest/runs")
-async def launch(
+@router.post("/backtest/run", response_class=HTMLResponse)
+async def run_backtest_endpoint(
     request: Request,
     context: ContextDep,
     _session: SessionDep,
@@ -415,78 +452,74 @@ async def launch(
     trend_threshold_a: str = Form("0.52"),
     direction_threshold_b: str = Form("0.53"),
     break_exit_threshold: str = Form("0.72"),
+    target_volatility_pct: str = Form("0.015"),
     catboost_depth: int = Form(4),
     catboost_iterations: int = Form(36),
+    catboost_l2_leaf_reg: float = Form(5.0),
+    weights_mode: str = Form("auto"),
+    force_exchange_sync: str = Form("false"),
 ) -> Any:
-    tf_clean = timeframe if timeframe in {"5m", "15m", "1h", "4h", "1d"} else "1h"
-    scen_clean = (
-        scenario if scenario in {"auto", "cycle", "bull", "chop", "crash_recovery"} else "auto"
-    )
+    matched = next((i for i in context.instruments if i.uid == instrument_uid), None)
+    ticker = matched.ticker if matched else "SBER"
+
+    try:
+        cap = Decimal(str(initial_capital))
+        comm = Decimal(str(commission_bps))
+        slip = Decimal(str(slippage_bps))
+        tp = Decimal(str(k_tp))
+        sl = Decimal(str(k_sl))
+        thr_a = Decimal(str(trend_threshold_a))
+        thr_b = Decimal(str(direction_threshold_b))
+        thr_break = Decimal(str(break_exit_threshold))
+        target_vol = Decimal(str(target_volatility_pct))
+    except (InvalidOperation, ValueError):
+        cap = Decimal("1000000")
+        comm = Decimal("5.0")
+        slip = Decimal("5.0")
+        tp = Decimal("1.8")
+        sl = Decimal("1.2")
+        thr_a = Decimal("0.52")
+        thr_b = Decimal("0.53")
+        thr_break = Decimal("0.72")
+        target_vol = Decimal("0.015")
+
     params = BacktestRunParameters(
         instrument_uid=instrument_uid,
-        ticker=_resolve_ticker(context, instrument_uid),
-        timeframe=tf_clean,
-        scenario=scen_clean,
-        bar_count=_safe_int(bar_count, 120, lo=40, hi=300),
-        initial_capital=_safe_decimal(
-            initial_capital,
-            Decimal("1000000"),
-            lo=Decimal("10000"),
-            hi=Decimal("100000000"),
-        ),
-        commission_bps=_safe_decimal(
-            commission_bps,
-            Decimal("5.0"),
-            lo=Decimal("0"),
-            hi=Decimal("100"),
-        ),
-        slippage_bps=_safe_decimal(
-            slippage_bps,
-            Decimal("5.0"),
-            lo=Decimal("0"),
-            hi=Decimal("100"),
-        ),
-        horizon_bars=_safe_int(horizon_bars, 8, lo=3, hi=36),
-        k_tp=_safe_decimal(k_tp, Decimal("1.8"), lo=Decimal("0.5"), hi=Decimal("6.0")),
-        k_sl=_safe_decimal(k_sl, Decimal("1.2"), lo=Decimal("0.3"), hi=Decimal("5.0")),
-        trend_threshold_a=_safe_decimal(
-            trend_threshold_a,
-            Decimal("0.52"),
-            lo=Decimal("0.30"),
-            hi=Decimal("0.90"),
-        ),
-        direction_threshold_b=_safe_decimal(
-            direction_threshold_b,
-            Decimal("0.53"),
-            lo=Decimal("0.50"),
-            hi=Decimal("0.90"),
-        ),
-        break_exit_threshold=_safe_decimal(
-            break_exit_threshold,
-            Decimal("0.72"),
-            lo=Decimal("0.35"),
-            hi=Decimal("0.95"),
-        ),
-        catboost_depth=_safe_int(catboost_depth, 4, lo=4, hi=6),
-        catboost_iterations=_safe_int(catboost_iterations, 36, lo=12, hi=80),
+        ticker=ticker,
+        timeframe=timeframe if timeframe in {"5m", "15m", "1h", "4h", "1d"} else "1h",
+        scenario=scenario
+        if scenario in {"auto", "cycle", "bull", "chop", "crash_recovery"}
+        else "auto",
+        bar_count=max(40, min(int(bar_count), 360)),
+        initial_capital=max(Decimal("10000"), cap),
+        commission_bps=max(Decimal("0"), min(Decimal("100"), comm)),
+        slippage_bps=max(Decimal("0"), min(Decimal("100"), slip)),
+        horizon_bars=max(2, min(int(horizon_bars), 48)),
+        k_tp=max(Decimal("0.5"), min(Decimal("10.0"), tp)),
+        k_sl=max(Decimal("0.3"), min(Decimal("10.0"), sl)),
+        trend_threshold_a=max(Decimal("0.30"), min(Decimal("0.90"), thr_a)),
+        direction_threshold_b=max(Decimal("0.30"), min(Decimal("0.90"), thr_b)),
+        break_exit_threshold=max(Decimal("0.30"), min(Decimal("0.95"), thr_break)),
+        target_volatility_pct=max(Decimal("0.002"), min(Decimal("0.10"), target_vol)),
+        catboost_depth=max(3, min(int(catboost_depth), 6)),
+        catboost_iterations=max(10, min(int(catboost_iterations), 100)),
+        catboost_l2_leaf_reg=max(1.0, min(float(catboost_l2_leaf_reg), 30.0)),
+        weights_mode=weights_mode
+        if weights_mode in {"auto", "retrain", "load_saved"}
+        else "auto",
+        force_exchange_sync=(force_exchange_sync.lower() in {"true", "1", "yes"}),
     )
+
     report = await run_synthetic_backtest(context, params)
-    serialized = _serialize_report(report, params)
-
-    if request.headers.get("HX-Request") == "true":
-        return render_partial(
-            request,
-            "partials/backtest_report.html",
-            {"report": serialized},
-        )
-
-    return render_page(
+    chart_json, svg_bundle = _build_chart_payload(report, params)
+    return templates.TemplateResponse(
         request,
-        "pages/backtest.html",
-        title="Синтетический трейдер — Соревнование алгоритмов и Бэктест",
-        section="backtest",
-        data={
-            "instruments": context.tradable_instruments,
-            "report": serialized,
+        "partials/backtest_report.html",
+        {
+            "request": request,
+            "params": params,
+            "report": report,
+            "chart_json": chart_json,
+            "svg": svg_bundle,
         },
     )

@@ -619,6 +619,75 @@ class SingleHeadCatBoostClassifier:
         n = max(count, 1)
         return {k: v / n for k, v in totals.items()}
 
+    def to_weights_dict(self) -> dict[str, Any]:
+        """Экспортирует симметричные деревья, листья и калибратор головы в словарь."""
+        return {
+            "head_name": self.head_name,
+            "backend_name": self.backend_name,
+            "feature_names": list(self.feature_names),
+            "all_feature_names": list(self.all_feature_names),
+            "base_margin": round(self.base_margin, 6),
+            "best_iteration": self.best_iteration,
+            "validation_log_loss": round(self.validation_log_loss, 6),
+            "calibrator_temperature": round(self.calibrator.temperature, 5),
+            "calibrator_knots_x": [round(x, 5) for x in self.calibrator._iso_knots_x],
+            "calibrator_knots_y": [round(y, 5) for y in self.calibrator._iso_knots_y],
+            "encoder_prior": round(self.encoder.global_prior, 5),
+            "encoder_stats": {
+                f"{k[0]}::{k[1]}": [
+                    self.encoder._counts.get(k, 0),
+                    round(self.encoder._sums.get(k, 0.0), 4),
+                ]
+                for k in self.encoder._counts
+            },
+            "trees": [
+                {
+                    "feature_indices": list(t.feature_indices),
+                    "thresholds": [round(th, 6) for th in t.thresholds],
+                    "leaf_values": [round(lv, 6) for lv in t.leaf_values],
+                    "leaf_weights": [round(lw, 6) for lw in t.leaf_weights],
+                }
+                for t in self.trees
+            ],
+        }
+
+    def load_weights_dict(self, data: dict[str, Any]) -> bool:
+        """Восстанавливает обученные симметричные деревья и калибровку из словаря весов."""
+        try:
+            self.head_name = str(data.get("head_name", self.head_name))
+            self.backend_name = str(data.get("backend_name", "Loaded from disk checkpoint"))
+            self.feature_names = tuple(str(x) for x in data["feature_names"])
+            self.all_feature_names = tuple(str(x) for x in data["all_feature_names"])
+            self.base_margin = float(data["base_margin"])
+            self.best_iteration = int(data["best_iteration"])
+            self.validation_log_loss = float(data.get("validation_log_loss", 0.5))
+            self.calibrator.temperature = float(data.get("calibrator_temperature", 1.0))
+            self.calibrator._iso_knots_x = [float(x) for x in data.get("calibrator_knots_x", [])]
+            self.calibrator._iso_knots_y = [float(y) for y in data.get("calibrator_knots_y", [])]
+            self.encoder.global_prior = float(data.get("encoder_prior", 0.5))
+            self.encoder._counts.clear()
+            self.encoder._sums.clear()
+            raw_stats = data.get("encoder_stats", {})
+            for comp_key, pair in raw_stats.items():
+                if "::" in str(comp_key):
+                    c_col, c_val = str(comp_key).split("::", 1)
+                    self.encoder._counts[(c_col, c_val)] = int(pair[0])
+                    self.encoder._sums[(c_col, c_val)] = float(pair[1])
+            loaded_trees: list[ObliviousTree] = []
+            for td in data.get("trees", []):
+                loaded_trees.append(
+                    ObliviousTree(
+                        feature_indices=tuple(int(i) for i in td["feature_indices"]),
+                        thresholds=tuple(float(x) for x in td["thresholds"]),
+                        leaf_values=tuple(float(x) for x in td["leaf_values"]),
+                        leaf_weights=tuple(float(x) for x in td["leaf_weights"]),
+                    )
+                )
+            self.trees = tuple(loaded_trees)
+            return len(self.trees) > 0
+        except (KeyError, ValueError, TypeError, IndexError):
+            return False
+
 
 class SyntheticCatBoostTriadModel:
     """Трёхголовая вероятностная модель CatBoost «Синтетического трейдера».
@@ -763,3 +832,33 @@ class SyntheticCatBoostTriadModel:
                 y_break_within_h,
             ),
         }
+
+    def to_weights_dict(self) -> dict[str, Any]:
+        """Экспортирует все 3 вероятностные головы ансамбля в словарь весов."""
+        total_trees = (
+            len(self.head_trend.trees) + len(self.head_up.trees) + len(self.head_break.trees)
+        )
+        total_leaves = sum(
+            len(t.leaf_values)
+            for h in (self.head_trend, self.head_up, self.head_break)
+            for t in h.trees
+        )
+        return {
+            "feature_names": list(self.feature_names),
+            "total_trees": total_trees,
+            "total_leaves": total_leaves,
+            "head_trend": self.head_trend.to_weights_dict(),
+            "head_up": self.head_up.to_weights_dict(),
+            "head_break": self.head_break.to_weights_dict(),
+        }
+
+    def load_weights_dict(self, data: dict[str, Any]) -> bool:
+        """Загружает сохранённые веса всех 3 вероятностных голов с диска."""
+        try:
+            self.feature_names = tuple(str(x) for x in data["feature_names"])
+            ok1 = self.head_trend.load_weights_dict(data["head_trend"])
+            ok2 = self.head_up.load_weights_dict(data["head_up"])
+            ok3 = self.head_break.load_weights_dict(data["head_break"])
+            return ok1 and ok2 and ok3
+        except (KeyError, ValueError, TypeError):
+            return False

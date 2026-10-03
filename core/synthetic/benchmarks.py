@@ -511,3 +511,73 @@ def run_elastic_net_trend_benchmark(
         category="ml",
         description="Линейная ML-модель (L1+L2): ловит тренды, но не видит нелинейных разворотов",
     )
+
+
+def run_neural_mlp_benchmark(
+    candles: Sequence[OHLCV],
+    neural_probs_per_bar: Sequence[tuple[float, float, float]],
+    *,
+    initial_capital: Decimal = Decimal("1000000"),
+    commission_rate: Decimal = Decimal("0.0005"),
+    slippage_rate: Decimal = Decimal("0.0005"),
+) -> BenchmarkRunResult:
+    """Торговый контур чистой 3-слойной нейросети ``TemporalMLPNetwork`` (Adam Backprop)."""
+    if len(candles) < 3 or len(neural_probs_per_bar) < len(candles):
+        return BenchmarkRunResult(
+            name="Neural MLP (Adam 3-Layer)",
+            total_return_pct=Decimal("0"),
+            max_drawdown_pct=Decimal("0"),
+            sharpe_ratio=0.0,
+            trades_count=0,
+            equity_curve=(initial_capital,),
+            bar_returns=(),
+            category="ml",
+            description="3-слойная нейросеть (Dense 24->12->3, Adam Backprop) без HMM-защиты",
+        )
+
+    closes = [float(c.close) for c in candles]
+    n = len(closes)
+    cost_rate = float(commission_rate + slippage_rate)
+    eq = float(initial_capital)
+    equity: list[Decimal] = [initial_capital]
+    bar_rets: list[float] = []
+    pos_frac = 0.0
+    trades = 0
+
+    for i in range(n - 1):
+        p_tr, p_up, p_br = neural_probs_per_bar[i]
+        edge = p_tr * (2.0 * p_up - 1.0) * (1.0 - 0.5 * p_br)
+        if p_up >= 0.52 and p_tr >= 0.48 and p_br < 0.65:
+            target_frac = min(max(0.35 + edge * 0.85, 0.25), 0.78)
+        else:
+            target_frac = 0.0
+
+        turnover = abs(target_frac - pos_frac)
+        if target_frac > 0.05 and pos_frac <= 0.05:
+            trades += 1
+        pos_frac = target_frac
+
+        raw_ret = (
+            (closes[i + 1] - closes[i]) / closes[i]
+            if closes[i] > 0
+            else 0.0
+        )
+        step_ret = pos_frac * raw_ret - turnover * cost_rate
+        eq *= max(0.01, 1.0 + step_ret)
+        bar_rets.append(step_ret)
+        equity.append(Decimal(f"{eq:.2f}"))
+
+    tot_ret = ((equity[-1] - initial_capital) / initial_capital * Decimal("100")).quantize(
+        Decimal("0.01")
+    )
+    return BenchmarkRunResult(
+        name="Neural MLP (Adam 3-Layer)",
+        total_return_pct=tot_ret,
+        max_drawdown_pct=_compute_max_drawdown_pct(equity),
+        sharpe_ratio=compute_annualized_sharpe(bar_rets),
+        trades_count=trades,
+        equity_curve=tuple(equity),
+        bar_returns=tuple(bar_rets),
+        category="ml",
+        description="3-слойная нейросеть (Dense 24->12->3, Adam Backprop) без защиты HMM-режимов",
+    )

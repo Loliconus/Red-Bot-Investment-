@@ -36,6 +36,7 @@ from core.synthetic.benchmarks import (
     run_elastic_net_trend_benchmark,
     run_lightgbm_single_head_benchmark,
     run_ma_crossover_benchmark,
+    run_neural_mlp_benchmark,
     run_rsi_benchmark,
 )
 from core.synthetic.calibration import CalibrationReport
@@ -43,6 +44,11 @@ from core.synthetic.catboost_model import (
     CatBoostHyperparameters,
     ProbabilisticTriadPrediction,
     SyntheticCatBoostTriadModel,
+)
+from core.synthetic.checkpoint import (
+    ModelWeightsManifest,
+    load_model_checkpoint,
+    save_model_checkpoint,
 )
 from core.synthetic.feature_selection import (
     FeatureSelectionReport,
@@ -69,6 +75,7 @@ from core.synthetic.mlops import (
     build_experiment_record,
     evaluate_drift_and_retraining_trigger,
 )
+from core.synthetic.neural_model import TemporalMLPNetwork
 from core.synthetic.risk_engine import (
     SyntheticDirection,
     SyntheticPositionDecision,
@@ -321,6 +328,10 @@ class SyntheticTraderEvaluationReport:
     completed_trades: tuple[SyntheticTradeExecutionRecord, ...] = ()
     ml_backend_summary: str = "CatBoost + LightGBM + scikit-learn + SciPy"
     human_summary: str = ""
+    weights_manifest: ModelWeightsManifest | None = None
+    train_split_index: int = 0
+    data_source_label: str = "Локальная БД DuckDB (таблица candles)"
+    db_candles_count: int = 0
 
 
 class SyntheticTraderEngine:
@@ -345,6 +356,7 @@ class SyntheticTraderEngine:
         self.gat_block = CrossAssetGATBlock()
         self.cnn_extractor = CandlestickCNN1DExtractor(window_bars=32)
         self.triad_model = SyntheticCatBoostTriadModel(self.catboost_params)
+        self.neural_net = TemporalMLPNetwork(hidden1=24, hidden2=12, epochs=35)
         self.selected_features: tuple[str, ...] = ()
 
     def extract_enriched_features(
@@ -408,6 +420,9 @@ class SyntheticTraderEngine:
         slippage_rate: Decimal = Decimal("0.0005"),
         imoex_candles: Sequence[OHLCV] = (),
         peer_candles: Mapping[str, Sequence[OHLCV]] | None = None,
+        weights_mode: str = "auto",
+        data_source_label: str = "Локальная БД DuckDB (таблица candles)",
+        db_candles_count: int = 0,
     ) -> SyntheticTraderEvaluationReport:
         """Выполняет полный цикл разметки, отбора признаков, обучения, валидации и бэктеста."""
         n_bars = len(candles)
@@ -507,16 +522,49 @@ class SyntheticTraderEngine:
 
         reduced_full_matrix = [[row[j] for j in sel_idx] for row in full_matrix]
         reduced_dev_matrix = [reduced_full_matrix[i] for i in dev_indices]
+        dev_y_up_filled = [
+            int(y_u) if y_u is not None else (1 if dev_returns[i] >= 0.0 else 0)
+            for i, y_u in enumerate(dev_y_up)
+        ]
 
-        # 6. Обучение финальной трёхголовой модели CatBoost на отобранных признаках
-        self.triad_model.fit(
-            self.selected_features,
-            reduced_dev_matrix,
-            dev_cat,
-            dev_y_trend,
-            dev_y_up,
-            dev_y_break,
-        )
+        # 6. Обучение нейросети (Adam Backprop) и 3-голового CatBoost + сохранение весов на диск
+        loaded_manifest: ModelWeightsManifest | None = None
+        if weights_mode == "load_saved":
+            loaded_manifest = load_model_checkpoint(
+                ticker=ticker,
+                timeframe=timeframe,
+                triad_model=self.triad_model,
+                neural_net=self.neural_net,
+                expected_feature_count=len(self.selected_features),
+            )
+
+        if loaded_manifest is None:
+            self.triad_model.fit(
+                self.selected_features,
+                reduced_dev_matrix,
+                dev_cat,
+                dev_y_trend,
+                dev_y_up,
+                dev_y_break,
+            )
+            self.neural_net.fit(
+                reduced_dev_matrix,
+                dev_y_trend,
+                dev_y_up_filled,
+                dev_y_break,
+            )
+            weights_manifest = save_model_checkpoint(
+                ticker=ticker,
+                timeframe=timeframe,
+                triad_model=self.triad_model,
+                neural_net=self.neural_net,
+                selected_features=self.selected_features,
+                train_bars_count=len(dev_indices),
+                oos_bars_count=max(0, len(reduced_full_matrix) - len(dev_indices)),
+            )
+        else:
+            weights_manifest = loaded_manifest
+
         calibration_reports = self.triad_model.evaluate_calibration(
             reduced_full_matrix,
             cat_rows,
@@ -524,6 +572,10 @@ class SyntheticTraderEngine:
             y_up_all,
             y_break_all,
         )
+        neural_probs_all = [
+            self.neural_net.predict_probs(reduced_full_matrix[k])
+            for k in range(len(reduced_full_matrix))
+        ]
 
         # 7. Пошаговая симуляция торговли (Тройной барьер + Риск-гейт)
         cost_rate = commission_rate + slippage_rate
@@ -868,7 +920,14 @@ class SyntheticTraderEngine:
             commission_rate=commission_rate,
             slippage_rate=slippage_rate,
         )
-        benchmarks = (b_hold, b_lgbm, b_enet, b_ma, b_rsi)
+        b_nn = run_neural_mlp_benchmark(
+            eval_candles,
+            neural_probs_all,
+            initial_capital=initial_capital,
+            commission_rate=commission_rate,
+            slippage_rate=slippage_rate,
+        )
+        benchmarks = (b_hold, b_nn, b_lgbm, b_enet, b_ma, b_rsi)
 
         # 9. Валидация CPCV, PBO (CSCV), DSR, White RC и Hansen SPA (раздел 5)
         n_groups = min(6, max(4, n_events // 3))
@@ -1064,6 +1123,13 @@ class SyntheticTraderEngine:
             experiment_record=exp_record,
             step_records=tuple(step_records),
             completed_trades=tuple(completed_trades),
-            ml_backend_summary=self.triad_model.head_trend.backend_name,
+            ml_backend_summary=(
+                f"{self.triad_model.head_trend.backend_name} + "
+                f"Нейросеть ({self.neural_net.backend_used})"
+            ),
             human_summary=human_summary,
+            weights_manifest=weights_manifest,
+            train_split_index=len(dev_indices),
+            data_source_label=data_source_label,
+            db_candles_count=db_candles_count or len(candles),
         )

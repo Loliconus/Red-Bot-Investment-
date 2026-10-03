@@ -274,6 +274,7 @@ class InMemoryRepository:
         self.gui_audit: list[GuiAuditEntry] = []
         self.operational_values: dict[str, str] = {}
         self.ws_events: list[WsReplayEvent] = []
+        self.candles_store: dict[tuple[str, str], list[OHLCV]] = {}
 
     async def save_market_snapshot(self, snapshot: MarketSnapshot) -> UUID:
         self.market_snapshots[snapshot.id] = snapshot
@@ -516,11 +517,34 @@ class InMemoryRepository:
     async def memory_used_bytes(self) -> int | None:
         return None
 
+    async def save_candles(self, series: CandleSeries, instrument_uid: str) -> int:
+        key = (instrument_uid, series.timeframe.value)
+        existing = {c.timestamp: c for c in self.candles_store.get(key, [])}
+        for c in series.candles:
+            existing[c.timestamp] = c
+        self.candles_store[key] = [existing[ts] for ts in sorted(existing)]
+        return len(series.candles)
+
+    async def get_candles(
+        self,
+        instrument_uid: str,
+        timeframe: Timeframe,
+        since: datetime,
+        until: datetime,
+    ) -> CandleSeries:
+        key = (instrument_uid, timeframe.value)
+        bars = [
+            c
+            for c in self.candles_store.get(key, [])
+            if since <= c.timestamp <= until
+        ]
+        return CandleSeries(timeframe=timeframe, candles=tuple(bars))
+
     async def table_sizes(self) -> dict[str, int]:
         return {
             "instruments": len(self.instruments),
             "instrument_catalog": len(self.catalog),
-            "candles": 0,
+            "candles": sum(len(v) for v in self.candles_store.values()),
             "market_snapshots": len(self.market_snapshots),
             "decision_snapshots": len(self.decision_snapshots),
             "orderbook_snapshots": 0,

@@ -139,7 +139,7 @@ ignore = [
 "adapters/driving/web/routers/*.py" = ["I001", "C4", "SIM", "RUF"]
 "adapters/driving/cli/main.py" = ["I001", "C4", "SIM", "RUF", "B008"]
 "application/use_cases/run_backtest.py" = ["I001", "C4", "SIM", "RUF"]
-"core/synthetic/*.py" = ["I001", "C4", "SIM", "RUF", "N806", "B007", "UP"]
+"core/synthetic/*.py" = ["I001", "C4", "SIM", "RUF", "N806", "B007", "UP", "SLF001"]
 # AccountSelectionRequired — публичный контракт CLI/GUI, имя задокументировано с 0.1
 "application/use_cases/select_account.py" = ["N818"]
 
