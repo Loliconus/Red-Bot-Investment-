@@ -85,27 +85,42 @@ def quotation_to_decimal(quotation: Any) -> Decimal:
     """Конвертирует SDK Quotation штатной функцией без float."""
     if quotation is None:
         return ZERO
-    from t_tech.invest.utils import quotation_to_decimal as sdk_quotation_to_decimal
+    try:
+        from t_tech.invest.utils import quotation_to_decimal as sdk_quotation_to_decimal
 
-    # SDK не типизирован: функция документированно возвращает Decimal.
-    return cast(Decimal, sdk_quotation_to_decimal(quotation))
+        # SDK не типизирован: функция документированно возвращает Decimal.
+        return cast(Decimal, sdk_quotation_to_decimal(quotation))
+    except ImportError:
+        units = Decimal(int(getattr(quotation, "units", 0) or 0))
+        nano = Decimal(int(getattr(quotation, "nano", 0) or 0)) / Decimal("1000000000")
+        return units + nano
 
 
 def money_value_to_decimal(money: Any) -> Decimal:
     """Конвертирует SDK MoneyValue штатной функцией без float."""
     if money is None:
         return ZERO
-    from t_tech.invest.utils import money_to_decimal
+    try:
+        from t_tech.invest.utils import money_to_decimal
 
-    # SDK не типизирован: функция документированно возвращает Decimal.
-    return cast(Decimal, money_to_decimal(money))
+        # SDK не типизирован: функция документированно возвращает Decimal.
+        return cast(Decimal, money_to_decimal(money))
+    except ImportError:
+        return quotation_to_decimal(money)
 
 
 def decimal_to_quotation(value: Decimal) -> Any:
     """Конвертирует Decimal в SDK Quotation штатной функцией."""
-    from t_tech.invest.utils import decimal_to_quotation as sdk_decimal_to_quotation
+    try:
+        from t_tech.invest.utils import decimal_to_quotation as sdk_decimal_to_quotation
 
-    return sdk_decimal_to_quotation(value)
+        return sdk_decimal_to_quotation(value)
+    except ImportError:
+        from types import SimpleNamespace
+
+        units = int(value)
+        nano = int((value - Decimal(units)) * Decimal("1000000000"))
+        return SimpleNamespace(units=units, nano=nano)
 
 
 def proto_timestamp_to_datetime(timestamp: Any) -> datetime:

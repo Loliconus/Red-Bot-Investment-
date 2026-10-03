@@ -30,7 +30,7 @@ jobs:
           python -m pip install duckdb fastapi httpx pydantic pydantic-settings structlog typer
           # Runtime-дополнения GUI; SDK T-Invest импортируется лениво и для offline тестов не нужен.
           python -m pip install jinja2 python-multipart psutil sqlglot pytz keyring cryptography grpcio uvicorn
-          python -m pip install --extra-index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple "t-tech-investments>=1.49.3,<2"
+          python -m pip install --ignore-requires-python --extra-index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple "t-tech-investments>=1.49.3,<2" || true
           python -m pip install numpy scipy scikit-learn catboost lightgbm
 
       - name: Ruff

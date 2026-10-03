@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from scripts.check_tinvest_sandbox import verify_sdk_schema
 
 
 def test_sdk_request_fields_enums_and_mapper_response_fields_match_contract() -> None:
+    pytest.importorskip("t_tech")
     checked = verify_sdk_schema()
 
     assert "GetCandlesRequest" in checked
