@@ -135,47 +135,85 @@ class ProbabilityCalibrator:
         logits = [_logit(p) for p in raw_probabilities]
         y_float = [float(t) for t in targets]
 
-        # 1. Подбор оптимальной температуры T методом Ньютона / золотого сечения по NLL
-        best_t = 1.0
-        best_nll = 1e18
-        for step in range(8, 350, 4):
-            cand_t = step / 100.0
-            nll = 0.0
+        # 1. Подбор оптимальной температуры T (scipy.optimize.minimize_scalar при наличии SciPy)
+        def _nll_for_temp(cand_t: float) -> float:
+            t_val = max(float(cand_t), 0.25)
+            loss = 0.0
             for i in range(n):
-                p_cal = _clip_prob(_sigmoid(logits[i] / cand_t))
-                nll -= y_float[i] * math.log(p_cal) + (1.0 - y_float[i]) * math.log(1.0 - p_cal)
-            nll /= n
-            if nll < best_nll:
-                best_nll = nll
-                best_t = cand_t
-        self.temperature = best_t
+                p_cal = _clip_prob(_sigmoid(logits[i] / t_val))
+                loss -= y_float[i] * math.log(p_cal) + (1.0 - y_float[i]) * math.log(1.0 - p_cal)
+            return loss / n
 
-        # 2. Алгоритм PAVA (Pool Adjacent Violators) для монотонной изотонической регрессии
-        if self.method in {"isotonic", "hybrid"}:
+        best_t = 1.0
+        best_nll = _nll_for_temp(1.0)
+        try:
+            from scipy.optimize import minimize_scalar
+
+            opt_res = minimize_scalar(_nll_for_temp, bounds=(0.30, 2.40), method="bounded")
+            if opt_res.success and float(opt_res.fun) <= best_nll:
+                best_t = float(opt_res.x)
+                best_nll = float(opt_res.fun)
+        except ImportError:
+            for step in range(30, 245, 5):
+                cand_t = step / 100.0
+                nll = _nll_for_temp(cand_t)
+                if nll < best_nll:
+                    best_nll = nll
+                    best_t = cand_t
+        self.temperature = min(max(best_t, 0.30), 2.40)
+
+        # 2. Изотоническая регрессия (sklearn.isotonic.IsotonicRegression или алгоритм PAVA)
+        self._iso_knots_x = []
+        self._iso_knots_y = []
+        pos_cnt = sum(1 for y in targets if y == 1)
+        neg_cnt = n - pos_cnt
+        if self.method in {"isotonic", "hybrid"} and pos_cnt >= 3 and neg_cnt >= 3:
             temp_scaled = [_sigmoid(logits[i] / self.temperature) for i in range(n)]
-            paired = sorted(zip(temp_scaled, y_float, strict=True), key=lambda pair: pair[0])
+            used_sklearn = False
+            try:
+                from sklearn.isotonic import IsotonicRegression
 
-            # Блок PAVA: [sum_y, weight, min_x, max_x]
-            blocks: list[list[float]] = []
-            for x_val, y_val in paired:
-                blocks.append([y_val, 1.0, x_val, x_val])
-                while len(blocks) >= 2:
-                    prev = blocks[-2]
-                    curr = blocks[-1]
-                    if prev[0] / prev[1] > curr[0] / curr[1]:
-                        merged = [
-                            prev[0] + curr[0],
-                            prev[1] + curr[1],
-                            prev[2],
-                            curr[3],
-                        ]
-                        blocks.pop()
-                        blocks[-1] = merged
-                    else:
-                        break
+                iso = IsotonicRegression(y_min=0.02, y_max=0.98, out_of_bounds="clip")
+                iso.fit(temp_scaled, y_float)
+                thresholds_x = getattr(iso, "X_thresholds_", None)
+                thresholds_y = getattr(iso, "y_thresholds_", None)
+                if thresholds_x is not None and thresholds_y is not None and len(thresholds_x) >= 2:
+                    self._iso_knots_x = [float(x) for x in thresholds_x]
+                    self._iso_knots_y = [_clip_prob(float(y), eps=0.02) for y in thresholds_y]
+                    used_sklearn = True
+            except ImportError:
+                used_sklearn = False
 
-            self._iso_knots_x = [0.5 * (b[2] + b[3]) for b in blocks]
-            self._iso_knots_y = [_clip_prob(b[0] / b[1], eps=0.01) for b in blocks]
+            if not used_sklearn:
+                paired = sorted(zip(temp_scaled, y_float, strict=True), key=lambda pair: pair[0])
+                blocks: list[list[float]] = []
+                for x_val, y_val in paired:
+                    blocks.append([y_val, 1.0, x_val, x_val])
+                    while len(blocks) >= 2:
+                        prev = blocks[-2]
+                        curr = blocks[-1]
+                        if prev[0] / prev[1] > curr[0] / curr[1]:
+                            merged = [
+                                prev[0] + curr[0],
+                                prev[1] + curr[1],
+                                prev[2],
+                                curr[3],
+                            ]
+                            blocks.pop()
+                            blocks[-1] = merged
+                        else:
+                            break
+                self._iso_knots_x = [0.5 * (b[2] + b[3]) for b in blocks]
+                self._iso_knots_y = [_clip_prob(b[0] / b[1], eps=0.02) for b in blocks]
+
+            # Если на малой выборке изотоническая ступенька схлопнула диапазон (< 0.30),
+            # добавляем крайние якоря [0.02, 0.98] для сохранения монотонности и чувствительности
+            if (
+                len(self._iso_knots_y) < 2
+                or (max(self._iso_knots_y) - min(self._iso_knots_y)) < 0.30
+            ):
+                self._iso_knots_x = [0.02, *self._iso_knots_x, 0.98]
+                self._iso_knots_y = [0.04, *self._iso_knots_y, 0.96]
 
         return self
 

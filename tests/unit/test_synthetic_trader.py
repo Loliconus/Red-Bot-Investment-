@@ -395,11 +395,27 @@ def test_mlops_psi_drift_benchmarks_and_tbank_archive_helpers() -> None:
 
 
 def test_full_synthetic_trader_engine_end_to_end() -> None:
-    """Полный сквозной прогон SyntheticTraderEngine."""
-    candles = _sample_candles(64)
+    """Полный сквозной прогон SyntheticTraderEngine и соревнование 6 алгоритмов."""
+    from core.synthetic.engine import generate_reference_moex_series
+
+    candles, imoex = generate_reference_moex_series(
+        ticker="SBER",
+        bar_count=120,
+        scenario="cycle",
+    )
     engine = SyntheticTraderEngine()
-    report = engine.run_full_evaluation(candles, instrument_uid="uid-sber", ticker="SBER")
+    report = engine.run_full_evaluation(
+        candles,
+        instrument_uid="uid-sber",
+        ticker="SBER",
+        imoex_candles=imoex,
+    )
     assert report.ticker == "SBER"
-    assert len(report.benchmarks) == 3
+    assert len(report.benchmarks) == 5
+    assert report.trades_count >= 5
+    assert len(report.completed_trades) == report.trades_count
+    assert report.total_return_pct > Decimal("0")
     assert report.overfitting_audit.cpcv_n_splits > 0
-    assert len(report.step_records) > 10
+    assert len(report.step_records) > 20
+    assert report.human_summary != ""
+

@@ -1,356 +1,774 @@
-<div id="synthetic-backtest-results">
-  <!-- KPI Funnel: Триада вероятностей + ключевые метрики прогона -->
-  <section class="funnel" aria-label="Сводка Синтетического трейдера">
-    <div class="funnel-stage">
-      <small>P(TREND) · РЕЖИМ</small>
-      <strong class="positive">{{ report.triad.p_trend_pct }}%</strong>
-      <div class="funnel-bar"><i style="width: {{ report.triad.p_trend_pct }}%"></i></div>
-      <span class="funnel-conv">raw {{ report.triad.raw_p_trend_pct }}% · порог a={{ report.params.trend_threshold_a }}</span>
+<div id="synthetic-backtest-results" class="stack-gap">
+
+  <!-- 1. ГЛАВНАЯ СВОДКА ЧЕЛОВЕЧЕСКИМ ЯЗЫКОМ -->
+  <section class="panel" style="border-left: 5px solid {% if report.is_profitable %}#16a34a{% else %}#dc2626{% endif %};">
+    <div class="panel-head">
+      <div>
+        <span class="eyebrow">РЕЗУЛЬТАТ ПРОГОНА ПРОСТЫМ ЯЗЫКОМ · {{ report.ticker }} ({{ report.timeframe | upper }})</span>
+        <h2>Как отторговал «Синтетический трейдер» и почему принял такие решения</h2>
+      </div>
+      <div class="cluster">
+        <span class="pill {% if report.trades_count > 0 %}success{% else %}warning{% endif %}">
+          СДЕЛОК СОВЕРШЕНО: {{ report.trades_count }}
+        </span>
+        <span class="pill {% if report.mlops.shadow_mode_ready %}success{% else %}warning{% endif %}">
+          {% if report.mlops.shadow_mode_ready %}ОБОГНАЛ КОНКУРЕНТОВ · ГОТОВ К ТОРГОВЛЕ{% else %}РЕЖИМ НАБЛЮДЕНИЯ{% endif %}
+        </span>
+      </div>
     </div>
-    <div class="funnel-stage">
-      <small>P(UP | TREND) · ВЕКТОР</small>
-      <strong>{{ report.triad.p_up_pct }}%</strong>
-      <div class="funnel-bar"><i style="width: {{ report.triad.p_up_pct }}%"></i></div>
-      <span class="funnel-conv">raw {{ report.triad.raw_p_up_pct }}% · порог b={{ report.params.direction_threshold_b }}</span>
-    </div>
-    <div class="funnel-stage">
-      <small>P(BREAK ≤ H) · РИСК СЛОМА</small>
-      <strong class="accent">{{ report.triad.p_break_pct }}%</strong>
-      <div class="funnel-bar"><i style="width: {{ report.triad.p_break_pct }}%"></i></div>
-      <span class="funnel-conv">горизонт H={{ report.params.horizon_bars }} баров</span>
-    </div>
-    <div class="funnel-stage">
-      <small>OOS ДОХОДНОСТЬ</small>
-      <strong class="{% if report.total_return_pct.startswith('-') %}negative{% else %}positive{% endif %}">
-        {{ report.total_return_pct }}%
-      </strong>
-      <span class="funnel-conv">Капитал: {{ report.final_equity }} ₽</span>
-    </div>
-    <div class="funnel-stage">
-      <small>OOS SHARPE / DSR</small>
-      <strong>{{ report.oos_sharpe }}</strong>
-      <span class="funnel-conv">DSR: {{ report.validation.dsr_pct }} · MaxDD: {{ report.max_drawdown_pct }}%</span>
-    </div>
-    <div class="funnel-stage">
-      <small>PBO (CSCV) / SPA</small>
-      <strong>{{ report.validation.pbo_pct }}</strong>
-      <span class="funnel-conv">Hansen SPA p={{ report.validation.hansen_spa_pvalue }}</span>
+
+    <p style="font-size: 1.02rem; line-height: 1.55; margin: 0 0 1rem 0;">
+      {{ report.human_summary }}
+    </p>
+
+    <div class="metric-ribbon">
+      <article class="metric-tile">
+        <span>ИТОГОВАЯ ПРИБЫЛЬ</span>
+        <strong class="{% if report.is_profitable %}positive{% else %}negative{% endif %}">
+          {% if report.is_profitable %}+{% endif %}{{ report.total_return_pct }}% ({{ report.pnl_rub }})
+        </strong>
+        <small>{{ report.initial_capital }} ₽ → {{ report.final_equity }} ₽</small>
+      </article>
+      <article class="metric-tile">
+        <span>СОВЕРШЕНО СДЕЛОК / WIN RATE</span>
+        <strong>{{ report.trades_count }} шт. · {{ report.win_rate_pct }}%</strong>
+        <small>Profit Factor: {{ report.profit_factor }}</small>
+      </article>
+      <article class="metric-tile">
+        <span>МАКСИМАЛЬНАЯ ПРОСАДКА</span>
+        <strong>{{ report.max_drawdown_pct }}%</strong>
+        <small>Защита от обвала и боковой пилы</small>
+      </article>
+      <article class="metric-tile">
+        <span>КОЭФФИЦИЕНТ ШАРПА (OOS)</span>
+        <strong>{{ report.oos_sharpe }}</strong>
+        <small>CPCV средний: {{ report.validation.cpcv_mean_sharpe }} ± {{ report.validation.cpcv_std_sharpe }}</small>
+      </article>
+      <article class="metric-tile">
+        <span>ТЕКУЩИЙ РЕЖИМ РЫНКА (HMM)</span>
+        <strong>
+          {% if report.hmm.dominant_regime == 'TREND' %}🟢 ТРЕНД (TREND)
+          {% elif report.hmm.dominant_regime == 'CHOP' %}🟡 БОКОВИК / ПИЛА (CHOP)
+          {% else %}🔴 ПАНИКА (PANIC){% endif %}
+        </strong>
+        <small>Ожидаемая длительность фазы: ~{{ report.hmm.expected_duration }} свечей</small>
+      </article>
+      <article class="metric-tile">
+        <span>ТЕКУЩЕЕ РЕШЕНИЕ НА ПОСЛЕДНЕМ БАРЕ</span>
+        <strong>
+          {% if report.risk_decision.allow_entry %}🟢 ПОКУПКА ({{ report.risk_decision.recommended_lots }} лотов)
+          {% else %}⏸ В КЭШЕ (ОЖИДАНИЕ){% endif %}
+        </strong>
+        <small>{{ report.risk_decision.human_reason }}</small>
+      </article>
     </div>
   </section>
 
-  <!-- Секция 1: Этап 0 (HMM Гамильтона) + Детерминированный Риск-Движок + ℓ1-фильтр -->
-  <div class="two-column">
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <span class="eyebrow">ЭТАП 0 &amp; РАЗДЕЛ 2.2</span>
-          <h2>HMM-Режим Гамильтона и ℓ1-Фильтрация Тренда</h2>
-        </div>
-        <span class="pill {% if report.hmm.is_trading_banned %}danger{% else %}success{% endif %}">
-          HMM: {{ report.hmm.dominant_regime }}
-        </span>
-      </div>
-      <dl class="detail-list">
-        <div>
-          <dt>Апостериорная вероятность TREND</dt>
-          <dd>{{ report.hmm.prob_trend_pct }}%</dd>
-        </div>
-        <div>
-          <dt>Апостериорная вероятность CHOP («пила»)</dt>
-          <dd>{{ report.hmm.prob_chop_pct }}%</dd>
-        </div>
-        <div>
-          <dt>Апостериорная вероятность PANIC</dt>
-          <dd class="{% if report.hmm.is_trading_banned %}negative{% endif %}">{{ report.hmm.prob_panic_pct }}%</dd>
-        </div>
-        <div>
-          <dt>Ожидаемая длительность режима</dt>
-          <dd>{{ report.hmm.expected_duration }} баров</dd>
-        </div>
-        <div>
-          <dt>ℓ1-Trend Filter (Kim, Boyd 2009) · λ / Узлы излома</dt>
-          <dd>λ={{ report.l1_filter.lambda_reg }} · {{ report.l1_filter.knots_count }} knots</dd>
-        </div>
-        <div>
-          <dt>Остаточный шум (σ_noise) / Зазор двойственности</dt>
-          <dd>{{ report.l1_filter.residual_std }} / {{ report.l1_filter.dual_gap }}</dd>
-        </div>
-      </dl>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <span class="eyebrow">РАЗДЕЛ 6 · ЗАЩИТНЫЙ КОНТУР</span>
-          <h2>Детерминированный Риск-Движок</h2>
-        </div>
-        <span class="pill {% if report.risk_decision.allow_entry %}success{% else %}neutral{% endif %}">
-          {{ report.risk_decision.direction }} · {{ report.risk_decision.recommended_lots }} ЛОТ.
-        </span>
-      </div>
-      <dl class="detail-list">
-        <div>
-          <dt>Доля капитала (Volatility &amp; Break Adjusted)</dt>
-          <dd>{{ report.risk_decision.position_fraction_pct }}%</dd>
-        </div>
-        <div>
-          <dt>Множитель волатильности / Множитель (1 − P(break))</dt>
-          <dd>×{{ report.risk_decision.vol_scalar }} / ×{{ report.risk_decision.break_scalar }}</dd>
-        </div>
-        <div>
-          <dt>Адаптивный Stop-Loss / Take-Profit (ATR)</dt>
-          <dd>{{ report.risk_decision.stop_loss }} ₽ / {{ report.risk_decision.take_profit }} ₽</dd>
-        </div>
-        <div>
-          <dt>Динамический Trailing-Stop</dt>
-          <dd>{{ report.risk_decision.trailing_stop }} ₽</dd>
-        </div>
-        <div>
-          <dt>Ожидаемое преимущество E[edge] / С поправкой на слом</dt>
-          <dd>{{ report.triad.directional_edge }} / {{ report.triad.confidence_edge }}</dd>
-        </div>
-        <div>
-          <dt>Вердикт защитных контуров</dt>
-          <dd>{{ report.risk_decision.blocked_reason }}</dd>
-        </div>
-      </dl>
-    </section>
-  </div>
-
-  <!-- Секция 2: Статистическая валидация (CPCV, PBO, DSR, White RC, Hansen SPA) + Параллельные бенчмарки -->
-  <div class="two-column">
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <span class="eyebrow">РАЗДЕЛ 5 · ЗАЩИТА ОТ DATA SNOOPING</span>
-          <h2>Purged K-Fold · CPCV · PBO · DSR · SPA</h2>
-        </div>
-        <span class="pill {% if report.validation.passes_gate %}success{% else %}warning{% endif %}">
-          {% if report.validation.passes_gate %}GATE PASSED{% else %}REVIEW REQUIRED{% endif %}
-        </span>
-      </div>
-      <dl class="detail-list">
-        <div>
-          <dt>Combinatorial Purged CV (CPCV фолдов / путей)</dt>
-          <dd>{{ report.validation.cpcv_splits }} фолдов / {{ report.validation.cpcv_paths }} путей</dd>
-        </div>
-        <div>
-          <dt>CPCV OOS Sharpe (среднее ± σ по путям)</dt>
-          <dd>{{ report.validation.cpcv_mean_sharpe }} ± {{ report.validation.cpcv_std_sharpe }}</dd>
-        </div>
-        <div>
-          <dt>Probability of Backtest Overfitting (PBO, CSCV)</dt>
-          <dd>{{ report.validation.pbo_pct }} (logit {{ report.validation.pbo_logit }})</dd>
-        </div>
-        <div>
-          <dt>Deflated Sharpe Ratio (DSR, N={{ report.validation.n_trials }} попыток)</dt>
-          <dd>{{ report.validation.dsr_pct }} (порог SR₀={{ report.validation.null_sr0 }})</dd>
-        </div>
-        <div>
-          <dt>White's Reality Check / Hansen's SPA p-value</dt>
-          <dd>RC p={{ report.validation.white_rc_pvalue }} · SPA p={{ report.validation.hansen_spa_pvalue }}</dd>
-        </div>
-        <div>
-          <dt>Frozen Holdout (неприкосновенный срез)</dt>
-          <dd>Dev: {{ report.validation.dev_samples }} · Holdout: {{ report.validation.holdout_samples }} (с {{ report.validation.holdout_cutoff }})</dd>
-        </div>
-      </dl>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <span class="eyebrow">РАЗДЕЛ 7.2 · ОБЯЗАТЕЛЬНЫЕ ЭТАЛОНЫ</span>
-          <h2>Сравнение с параллельными бенчмарками (с комиссией)</h2>
-        </div>
-        <span class="pill {% if report.mlops.beats_all_benchmarks %}success{% else %}warning{% endif %}">
-          {% if report.mlops.beats_all_benchmarks %}BEATS BENCHMARKS{% else %}BENCHMARK AHEAD{% endif %}
-        </span>
-      </div>
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Стратегия / Эталон</th>
-              <th>Доходность</th>
-              <th>Макс. просадка</th>
-              <th>Sharpe</th>
-              <th>Сделки</th>
-              <th>Итоговый капитал</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr class="row-active">
-              <td><strong>Синтетический трейдер ({{ report.ticker }})</strong></td>
-              <td class="mono">{{ report.total_return_pct }}%</td>
-              <td class="mono">{{ report.max_drawdown_pct }}%</td>
-              <td class="mono">{{ report.oos_sharpe }}</td>
-              <td class="mono">{{ report.trades_count }}</td>
-              <td class="mono">{{ report.final_equity }} ₽</td>
-            </tr>
-            {% for b in report.benchmarks %}
-            <tr>
-              <td>{{ b.name }}</td>
-              <td class="mono">{{ b.total_return_pct }}%</td>
-              <td class="mono">{{ b.max_drawdown_pct }}%</td>
-              <td class="mono">{{ b.sharpe }}</td>
-              <td class="mono">{{ b.trades }}</td>
-              <td class="mono">{{ b.final_equity }} ₽</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </div>
-
-  <!-- Секция 3: Трёхэтапный отбор признаков + TreeSHAP вклады и Калибровка вероятностей -->
-  <div class="two-column">
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <span class="eyebrow">РАЗДЕЛ 3.3 · ОТБОР ПРИЗНАКОВ</span>
-          <h2>Воронка Elastic Net → Stability → CatBoost TreeSHAP</h2>
-        </div>
-        <span class="panel-counter">
-          {{ report.feature_selection.initial_count }} → {{ report.feature_selection.enet_count }} → {{ report.feature_selection.stability_count }} → {{ report.feature_selection.final_count }} ПРИЗН.
-        </span>
-      </div>
-      <div class="table-wrap">
-        <table class="data-table compact-table">
-          <thead>
-            <tr>
-              <th>Ведущий признак (TreeSHAP)</th>
-              <th>Вклад в логит (SHAP φ)</th>
-              <th>Отсечённые коллинеарные дубли (|r| &gt; 0.90)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for item in report.triad.shap %}
-            <tr>
-              <td class="mono"><strong>{{ item.feature }}</strong></td>
-              <td class="mono">{{ item.value }}</td>
-              <td class="mono">
-                {% if loop.index0 < report.feature_selection.dropped_collinear|length %}
-                  {% set pair = report.feature_selection.dropped_collinear[loop.index0] %}
-                  {{ pair.dropped }} ↔ {{ pair.kept }} ({{ pair.corr }})
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <span class="eyebrow">РАЗДЕЛ 4.1 · КАЛИБРОВКА ВЫХОДОВ</span>
-          <h2>Brier Score · ECE · Reliability Diagram</h2>
-        </div>
-        <span class="panel-counter">TEMPERATURE + ISOTONIC PAVA</span>
-      </div>
-      <div class="table-wrap">
-        <table class="data-table compact-table">
-          <thead>
-            <tr>
-              <th>Вероятностная голова</th>
-              <th>T</th>
-              <th>Brier (Raw → Cal)</th>
-              <th>BSS</th>
-              <th>ECE (Raw → Cal)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for cal in report.calibration %}
-            <tr>
-              <td><strong>{{ cal.head_name }}</strong></td>
-              <td class="mono">{{ cal.temperature }}</td>
-              <td class="mono">{{ cal.brier_raw }} → <strong>{{ cal.brier_cal }}</strong></td>
-              <td class="mono">{{ cal.bss }}</td>
-              <td class="mono">{{ cal.ece_raw }} → <strong>{{ cal.ece_cal }}</strong></td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </div>
-
-  <!-- Секция 4: MLOps (DVC-версия датасета, MLflow-эксперимент, мониторинг PSI-дрейфа) -->
+  <!-- 2. ИНТЕРАКТИВНЫЕ ГРАФИКИ: СОРЕВНОВАНИЕ 6 АЛГОРИТМОВ + РЕШЕНИЯ БОТА НА ЦЕНЕ + МЫСЛИ ML -->
   <section class="panel">
     <div class="panel-head">
       <div>
-        <span class="eyebrow">РАЗДЕЛ 7 · MLOPS &amp; МОНИТОРИНГ В БОЮ</span>
-        <h2>Версионирование датасета (DVC) · Эксперимент · Дрейф признаков (PSI)</h2>
+        <span class="eyebrow">ВИЗУАЛЬНАЯ АРЕНА АЛГОРИТМОВ И ТОЧЕК ПРИНЯТИЯ РЕШЕНИЙ</span>
+        <h2>1) Кто кого обыграл · 2) Где бот входил и выходил · 3) Вероятности ML-модели по барам</h2>
       </div>
-      <span class="pill {% if report.mlops.retrain_triggered %}danger{% else %}success{% endif %}">
-        PSI: {{ report.mlops.drift_status }} (max={{ report.mlops.max_psi }})
-      </span>
+      <span class="panel-counter">НАВЕДИТЕ МЫШЬ НА ЛЮБОЙ ГРАФИК ДЛЯ ПРОСМОТРА РЕШЕНИЯ НА СВЕЧЕ</span>
     </div>
-    <dl class="detail-list">
+
+    <!-- Интерактивная легенда-переключатель алгоритмов -->
+    <div id="arena-legend" style="display: flex; flex-wrap: wrap; gap: 0.55rem; margin-bottom: 0.75rem;"></div>
+
+    <!-- Живая плашка-инспектор текущего бара под курсором мыши -->
+    <div
+      id="arena-hover-banner"
+      style="padding: 0.65rem 0.9rem; margin-bottom: 0.9rem; border: 1px solid rgba(128,128,128,0.28); border-radius: 6px; font-size: 0.9rem; background: rgba(15,23,42,0.04);"
+    >
+      Наведите курсор мыши на график ниже, чтобы увидеть цену, режим рынка, все 3 вероятности модели и доходность каждого из 6 алгоритмов на выбранной свече.
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 1.1rem;">
+      <!-- График 1: Соревнование алгоритмов (Equity Curves в %) -->
       <div>
-        <dt>Паспорт датасета (DVC Snapshot ID / SHA-256)</dt>
-        <dd>{{ report.mlops.dataset_id }} · {{ report.mlops.sha256_short }}… ({{ report.mlops.bar_count }} баров)</dd>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.3rem;">
+          <strong>График 1. Соревнование 6 алгоритмов: накопленная доходность (% к стартовому капиталу)</strong>
+          <small>Кликните по алгоритму в легенде выше, чтобы скрыть или показать его линию</small>
+        </div>
+        <div style="position: relative; width: 100%; height: 260px; border: 1px solid rgba(128,128,128,0.25); border-radius: 6px; overflow: hidden;">
+          <canvas id="canvas-equity-arena" style="width: 100%; height: 100%; display: block;"></canvas>
+        </div>
       </div>
+
+      <!-- График 2: Цена + L1-тренд + Фон режимов HMM + Маркеры сделок (ВХОД / ВЫХОД) -->
       <div>
-        <dt>Запись эксперимента (MLflow Run ID / Схема)</dt>
-        <dd>{{ report.mlops.run_id }} · {{ report.mlops.schema_version }}</dd>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.3rem;">
+          <strong>График 2. Где и как бот принимал решения: Цена {{ report.ticker }}, кусочно-линейный ℓ1-тренд и точки сделок</strong>
+          <small>
+            Фон: <span style="color:#16a34a;font-weight:600;">■ Тренд</span> ·
+            <span style="color:#ca8a04;font-weight:600;">■ Боковик (Пила)</span> ·
+            <span style="color:#dc2626;font-weight:600;">■ Паника</span> ·
+            Маркеры: <span style="color:#16a34a;font-weight:700;">▲ ВХОД</span> /
+            <span style="color:#e11d48;font-weight:700;">▼ ВЫХОД</span>
+          </small>
+        </div>
+        <div style="position: relative; width: 100%; height: 250px; border: 1px solid rgba(128,128,128,0.25); border-radius: 6px; overflow: hidden;">
+          <canvas id="canvas-price-decisions" style="width: 100%; height: 100%; display: block;"></canvas>
+        </div>
       </div>
+
+      <!-- График 3: Мысли ML-модели во времени (Триада вероятностей P(trend), P(up|trend), P(break<=H)) -->
       <div>
-        <dt>Триггер переобучения (Auto-Retrain Gate)</dt>
-        <dd>{{ report.mlops.retrain_reason }} · Shadow/Sandbox Ready: {{ "ДА" if report.mlops.shadow_mode_ready else "ТРЕБУЕТСЯ НАСТРОЙКА" }}</dd>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.3rem;">
+          <strong>График 3. Внутренние вероятности ML-модели на каждом баре (0% — 100%)</strong>
+          <small>
+            <span style="color:#2563eb;font-weight:600;">━ P(тренд)</span> (порог a={{ report.params.trend_threshold_a }}) ·
+            <span style="color:#16a34a;font-weight:600;">━ P(рост|тренд)</span> (порог b={{ report.params.direction_threshold_b }}) ·
+            <span style="color:#dc2626;font-weight:600;">━ P(разворот≤H)</span>
+          </small>
+        </div>
+        <div style="position: relative; width: 100%; height: 195px; border: 1px solid rgba(128,128,128,0.25); border-radius: 6px; overflow: hidden;">
+          <canvas id="canvas-ml-probabilities" style="width: 100%; height: 100%; display: block;"></canvas>
+        </div>
       </div>
-    </dl>
+    </div>
+
+    <script id="synthetic-arena-data" type="application/json">{{ report.chart_json | safe }}</script>
+    <script>
+      (function () {
+        const dataEl = document.getElementById("synthetic-arena-data");
+        if (!dataEl) return;
+        let payload;
+        try {
+          payload = JSON.parse(dataEl.textContent);
+        } catch (err) {
+          return;
+        }
+        const n = (payload.timestamps || []).length;
+        if (n < 2) return;
+
+        const cEq = document.getElementById("canvas-equity-arena");
+        const cPr = document.getElementById("canvas-price-decisions");
+        const cPb = document.getElementById("canvas-ml-probabilities");
+        const hoverBanner = document.getElementById("arena-hover-banner");
+        const legendBox = document.getElementById("arena-legend");
+        if (!cEq || !cPr || !cPb) return;
+
+        const hiddenAlgos = new Set();
+        let hoverIdx = n - 1;
+
+        function renderLegend() {
+          if (!legendBox) return;
+          legendBox.innerHTML = "";
+          (payload.algorithms || []).forEach(function (alg) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            const isHidden = hiddenAlgos.has(alg.id);
+            btn.style.cssText =
+              "display:inline-flex;align-items:center;gap:0.45rem;padding:0.35rem 0.7rem;" +
+              "border-radius:999px;border:1px solid " + alg.color + ";" +
+              "background:" + (isHidden ? "transparent" : "rgba(15,23,42,0.04)") + ";" +
+              "opacity:" + (isHidden ? "0.45" : "1") + ";cursor:pointer;font-size:0.83rem;font-weight:600;";
+            const dot = document.createElement("span");
+            dot.style.cssText =
+              "width:10px;height:10px;border-radius:50%;display:inline-block;background:" + alg.color + ";";
+            const txt = document.createElement("span");
+            txt.textContent = alg.name + " (" + alg.return_pct + ", сделок: " + alg.trades + ")";
+            btn.appendChild(dot);
+            btn.appendChild(txt);
+            btn.addEventListener("click", function () {
+              if (hiddenAlgos.has(alg.id)) {
+                hiddenAlgos.delete(alg.id);
+              } else {
+                hiddenAlgos.add(alg.id);
+              }
+              renderLegend();
+              drawAll();
+            });
+            legendBox.appendChild(btn);
+          });
+        }
+
+        function prepCanvas(canvas) {
+          const dpr = window.devicePixelRatio || 1;
+          const rect = canvas.getBoundingClientRect();
+          const w = Math.max(320, Math.floor(rect.width));
+          const h = Math.max(140, Math.floor(rect.height));
+          if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+            canvas.width = w * dpr;
+            canvas.height = h * dpr;
+          }
+          const ctx = canvas.getContext("2d");
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          return { ctx: ctx, w: w, h: h };
+        }
+
+        function xForIndex(i, padL, plotW) {
+          return padL + (i / Math.max(1, n - 1)) * plotW;
+        }
+
+        function drawEquityChart() {
+          const info = prepCanvas(cEq);
+          const ctx = info.ctx, w = info.w, h = info.h;
+          const padL = 56, padR = 18, padT = 18, padB = 26;
+          const plotW = w - padL - padR;
+          const plotH = h - padT - padB;
+
+          ctx.clearRect(0, 0, w, h);
+
+          const visible = (payload.algorithms || []).filter(function (a) {
+            return !hiddenAlgos.has(a.id);
+          });
+          let minV = -2.0, maxV = 5.0;
+          visible.forEach(function (alg) {
+            (alg.curve_pct || []).forEach(function (v) {
+              if (v < minV) minV = v;
+              if (v > maxV) maxV = v;
+            });
+          });
+          const span = Math.max(1.5, maxV - minV);
+          minV -= span * 0.1;
+          maxV += span * 0.12;
+
+          function yVal(v) {
+            return padT + (1 - (v - minV) / (maxV - minV)) * plotH;
+          }
+
+          // Сетка и уровень 0%
+          ctx.strokeStyle = "rgba(148, 163, 184, 0.22)";
+          ctx.lineWidth = 1;
+          ctx.fillStyle = "#64748b";
+          ctx.font = "11px monospace";
+          for (let g = 0; g <= 4; g++) {
+            const val = minV + (g / 4) * (maxV - minV);
+            const y = yVal(val);
+            ctx.beginPath();
+            ctx.moveTo(padL, y);
+            ctx.lineTo(w - padR, y);
+            ctx.stroke();
+            ctx.fillText((val >= 0 ? "+" : "") + val.toFixed(1) + "%", 6, y + 4);
+          }
+
+          if (minV <= 0 && maxV >= 0) {
+            const y0 = yVal(0);
+            ctx.strokeStyle = "rgba(100, 116, 139, 0.55)";
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(padL, y0);
+            ctx.lineTo(w - padR, y0);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
+          // Кривые каждого алгоритма
+          visible.forEach(function (alg) {
+            const pts = alg.curve_pct || [];
+            if (!pts.length) return;
+            ctx.strokeStyle = alg.color;
+            ctx.lineWidth = alg.width || 2.0;
+            ctx.beginPath();
+            for (let i = 0; i < pts.length; i++) {
+              const x = xForIndex(i, padL, plotW);
+              const y = yVal(pts[i]);
+              if (i === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+          });
+
+          // Вертикальная линия курсора
+          if (hoverIdx >= 0 && hoverIdx < n) {
+            const hx = xForIndex(hoverIdx, padL, plotW);
+            ctx.strokeStyle = "rgba(15, 23, 42, 0.45)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(hx, padT);
+            ctx.lineTo(hx, h - padB);
+            ctx.stroke();
+
+            visible.forEach(function (alg) {
+              const v = (alg.curve_pct || [])[hoverIdx];
+              if (typeof v !== "number") return;
+              const hy = yVal(v);
+              ctx.fillStyle = alg.color;
+              ctx.beginPath();
+              ctx.arc(hx, hy, alg.id === "synthetic_trader" ? 4.5 : 3.2, 0, Math.PI * 2);
+              ctx.fill();
+            });
+          }
+
+          // Ось времени
+          ctx.fillStyle = "#64748b";
+          const stepT = Math.max(1, Math.floor(n / 6));
+          for (let i = 0; i < n; i += stepT) {
+            const tx = xForIndex(i, padL, plotW);
+            ctx.fillText(payload.timestamps[i], Math.max(padL, tx - 24), h - 7);
+          }
+        }
+
+        function drawPriceDecisionsChart() {
+          const info = prepCanvas(cPr);
+          const ctx = info.ctx, w = info.w, h = info.h;
+          const padL = 56, padR = 18, padT = 18, padB = 26;
+          const plotW = w - padL - padR;
+          const plotH = h - padT - padB;
+
+          ctx.clearRect(0, 0, w, h);
+
+          const prices = payload.prices || [];
+          const l1 = payload.l1_trend || [];
+          let minP = Math.min.apply(null, prices.concat(l1));
+          let maxP = Math.max.apply(null, prices.concat(l1));
+          const span = Math.max(1.0, maxP - minP);
+          minP -= span * 0.12;
+          maxP += span * 0.14;
+
+          function yPrice(p) {
+            return padT + (1 - (p - minP) / (maxP - minP)) * plotH;
+          }
+
+          // 1. Фоновые полосы режимов HMM (TREND / CHOP / PANIC)
+          const regimes = payload.regimes || [];
+          const barW = plotW / Math.max(1, n - 1);
+          for (let i = 0; i < n; i++) {
+            const x = xForIndex(i, padL, plotW) - barW * 0.5;
+            const reg = regimes[i] || "CHOP";
+            if (reg === "TREND") {
+              ctx.fillStyle = "rgba(22, 163, 74, 0.08)";
+            } else if (reg === "PANIC") {
+              ctx.fillStyle = "rgba(220, 38, 38, 0.12)";
+            } else {
+              ctx.fillStyle = "rgba(202, 138, 4, 0.07)";
+            }
+            ctx.fillRect(Math.max(padL, x), padT, barW + 1, plotH);
+          }
+
+          // Сетка цен
+          ctx.strokeStyle = "rgba(148, 163, 184, 0.22)";
+          ctx.lineWidth = 1;
+          ctx.fillStyle = "#64748b";
+          ctx.font = "11px monospace";
+          for (let g = 0; g <= 4; g++) {
+            const val = minP + (g / 4) * (maxP - minP);
+            const y = yPrice(val);
+            ctx.beginPath();
+            ctx.moveTo(padL, y);
+            ctx.lineTo(w - padR, y);
+            ctx.stroke();
+            ctx.fillText(val.toFixed(1), 6, y + 4);
+          }
+
+          // 2. Линия кусочно-линейного ℓ1-тренда
+          ctx.strokeStyle = "#2563eb";
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([5, 4]);
+          ctx.beginPath();
+          for (let i = 0; i < l1.length; i++) {
+            const x = xForIndex(i, padL, plotW);
+            const y = yPrice(l1[i]);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // 3. Линия цены закрытия
+          ctx.strokeStyle = "#0f172a";
+          ctx.lineWidth = 2.3;
+          ctx.beginPath();
+          for (let i = 0; i < prices.length; i++) {
+            const x = xForIndex(i, padL, plotW);
+            const y = yPrice(prices[i]);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+
+          // 4. Маркеры ВХОД (BUY) и ВЫХОД (EXIT)
+          (payload.signals || []).forEach(function (sig) {
+            const sx = xForIndex(sig.bar, padL, plotW);
+            const sy = yPrice(sig.price);
+            ctx.beginPath();
+            if (sig.action === "BUY") {
+              ctx.fillStyle = "#16a34a";
+              ctx.moveTo(sx, sy - 3);
+              ctx.lineTo(sx - 6, sy + 9);
+              ctx.lineTo(sx + 6, sy + 9);
+              ctx.closePath();
+              ctx.fill();
+            } else {
+              ctx.fillStyle = "#e11d48";
+              ctx.moveTo(sx, sy + 3);
+              ctx.lineTo(sx - 6, sy - 9);
+              ctx.lineTo(sx + 6, sy - 9);
+              ctx.closePath();
+              ctx.fill();
+            }
+          });
+
+          // Вертикальная линия курсора
+          if (hoverIdx >= 0 && hoverIdx < n) {
+            const hx = xForIndex(hoverIdx, padL, plotW);
+            ctx.strokeStyle = "rgba(15, 23, 42, 0.45)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(hx, padT);
+            ctx.lineTo(hx, h - padB);
+            ctx.stroke();
+          }
+        }
+
+        function drawProbabilitiesChart() {
+          const info = prepCanvas(cPb);
+          const ctx = info.ctx, w = info.w, h = info.h;
+          const padL = 56, padR = 18, padT = 14, padB = 22;
+          const plotW = w - padL - padR;
+          const plotH = h - padT - padB;
+
+          ctx.clearRect(0, 0, w, h);
+
+          function yProb(pct) {
+            return padT + (1 - pct / 100.0) * plotH;
+          }
+
+          ctx.strokeStyle = "rgba(148, 163, 184, 0.22)";
+          ctx.lineWidth = 1;
+          ctx.fillStyle = "#64748b";
+          ctx.font = "11px monospace";
+          [0, 25, 50, 75, 100].forEach(function (p) {
+            const y = yProb(p);
+            ctx.beginPath();
+            ctx.moveTo(padL, y);
+            ctx.lineTo(w - padR, y);
+            ctx.stroke();
+            ctx.fillText(p + "%", 12, y + 4);
+          });
+
+          // Пороговые линии a и b
+          const ya = yProb(payload.thr_a || 52);
+          ctx.strokeStyle = "rgba(37, 99, 235, 0.45)";
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(padL, ya);
+          ctx.lineTo(w - padR, ya);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          function drawSeries(arr, color, width) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.beginPath();
+            for (let i = 0; i < arr.length; i++) {
+              const x = xForIndex(i, padL, plotW);
+              const y = yProb(arr[i]);
+              if (i === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+          }
+
+          drawSeries(payload.p_trend || [], "#2563eb", 2.1);
+          drawSeries(payload.p_up || [], "#16a34a", 2.1);
+          drawSeries(payload.p_break || [], "#dc2626", 1.8);
+
+          if (hoverIdx >= 0 && hoverIdx < n) {
+            const hx = xForIndex(hoverIdx, padL, plotW);
+            ctx.strokeStyle = "rgba(15, 23, 42, 0.45)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(hx, padT);
+            ctx.lineTo(hx, h - padB);
+            ctx.stroke();
+          }
+        }
+
+        function updateHoverBanner(idx) {
+          if (!hoverBanner || idx < 0 || idx >= n) return;
+          const ts = payload.timestamps[idx];
+          const pr = payload.prices[idx];
+          const reg = payload.regimes[idx];
+          const pt = payload.p_trend[idx];
+          const pu = payload.p_up[idx];
+          const pb = payload.p_break[idx];
+          const expl = payload.explanations[idx] || "";
+          const algParts = (payload.algorithms || []).map(function (a) {
+            const val = (a.curve_pct || [])[idx] || 0;
+            const sign = val >= 0 ? "+" : "";
+            return "<span style='color:" + a.color + ";font-weight:700;'>" + a.name.split(" (")[0] + ": " + sign + val.toFixed(2) + "%</span>";
+          });
+          hoverBanner.innerHTML =
+            "<div><strong>Свеча #" + (idx + 1) + " (" + ts + ")</strong> · Цена: <strong>" + pr + " ₽</strong> · " +
+            "Режим HMM: <strong>" + reg + "</strong> · " +
+            "<span style='color:#2563eb;font-weight:600;'>P(тренд)=" + pt + "%</span> · " +
+            "<span style='color:#16a34a;font-weight:600;'>P(рост)=" + pu + "%</span> · " +
+            "<span style='color:#dc2626;font-weight:600;'>P(слом)=" + pb + "%</span></div>" +
+            "<div style='margin-top:0.25rem;'><strong>Решение бота:</strong> " + expl + "</div>" +
+            "<div style='margin-top:0.25rem;display:flex;flex-wrap:wrap;gap:0.75rem;'>" + algParts.join(" · ") + "</div>";
+        }
+
+        function drawAll() {
+          drawEquityChart();
+          drawPriceDecisionsChart();
+          drawProbabilitiesChart();
+          updateHoverBanner(hoverIdx);
+        }
+
+        function bindHover(canvas) {
+          canvas.addEventListener("mousemove", function (ev) {
+            const rect = canvas.getBoundingClientRect();
+            const padL = 56, padR = 18;
+            const plotW = Math.max(10, rect.width - padL - padR);
+            const relX = Math.min(Math.max(0, ev.clientX - rect.left - padL), plotW);
+            hoverIdx = Math.min(n - 1, Math.max(0, Math.round((relX / plotW) * (n - 1))));
+            drawAll();
+          });
+        }
+
+        bindHover(cEq);
+        bindHover(cPr);
+        bindHover(cPb);
+        window.addEventListener("resize", drawAll);
+        renderLegend();
+        setTimeout(drawAll, 30);
+      })();
+    </script>
   </section>
 
-  <!-- Секция 5: Хронологический журнал шагов бэктеста -->
+  <!-- 3. ТУРНИРНАЯ ТАБЛИЦА СОРЕВНОВАНИЯ 6 АЛГОРИТМОВ -->
   <section class="panel">
     <div class="panel-head">
       <div>
-        <span class="eyebrow">ЖУРНАЛ СИМУЛЯЦИИ ПО ЗАКРЫТЫМ БАРАМ</span>
-        <h2>Последние шаги прогона «Синтетического трейдера»</h2>
+        <span class="eyebrow">ТУРНИРНАЯ ТАБЛИЦА АЛГОРИТМОВ (В ОДИНАКОВЫХ КОМИССИЯХ И ПРОСКАЛЬЗЫВАНИИ)</span>
+        <h2>Сравнение «Синтетического трейдера» с ML-бустингом, линейным ML и классическими роботами</h2>
       </div>
-      <span class="panel-counter">БЕЗ УТЕЧЕК БУДУЩЕГО (POINT-IN-TIME)</span>
+      <span class="panel-counter">СТАРТОВЫЙ КАПИТАЛ: {{ report.initial_capital }} ₽</span>
     </div>
-    <div class="table-wrap">
-      <table class="data-table compact-table">
+
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Место / Алгоритм</th>
+          <th>Как принимает решения</th>
+          <th>Итоговая доходность</th>
+          <th>Конечный капитал</th>
+          <th>Макс. просадка</th>
+          <th>Sharpe</th>
+          <th>Сделок</th>
+          <th>Сравнение с нашим ботом</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="background: rgba(22, 163, 74, 0.07); font-weight: 600;">
+          <td>
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#e11d48;margin-right:6px;"></span>
+            🤖 Синтетический трейдер (CatBoost Triad + HMM)
+          </td>
+          <td>3 вероятности (Тренд, Направление, Слом) + HMM фильтр паники + Тройной барьер</td>
+          <td class="{% if report.is_profitable %}positive{% else %}negative{% endif %}">
+            {% if report.is_profitable %}+{% endif %}{{ report.total_return_pct }}%
+          </td>
+          <td>{{ report.final_equity }} ₽</td>
+          <td>{{ report.max_drawdown_pct }}%</td>
+          <td>{{ report.oos_sharpe }}</td>
+          <td>{{ report.trades_count }}</td>
+          <td><span class="pill success">НАША МОДЕЛЬ</span></td>
+        </tr>
+        {% for b in report.benchmarks %}
+          <tr>
+            <td>
+              <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{{ b.color }};margin-right:6px;"></span>
+              {{ b.name }}
+            </td>
+            <td><small>{{ b.description }}</small></td>
+            <td class="{% if b.is_positive %}positive{% else %}negative{% endif %}">
+              {% if b.is_positive %}+{% endif %}{{ b.total_return_pct }}%
+            </td>
+            <td>{{ b.final_equity }} ₽</td>
+            <td>{{ b.max_drawdown_pct }}%</td>
+            <td>{{ b.sharpe }}</td>
+            <td>{{ b.trades }}</td>
+            <td>
+              {% if not b.beats_bot %}
+                <span class="pill success">Бот впереди на +{{ b.diff_vs_bot }}%</span>
+              {% else %}
+                <span class="pill warning">Обогнал бота</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 4. ПОДРОБНЫЙ ЖУРНАЛ СОВЕРШЁННЫХ СДЕЛОК БОТА ЧЕЛОВЕЧЕСКИМ ЯЗЫКОМ -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <span class="eyebrow">ЖУРНАЛ СДЕЛОК «СИНТЕТИЧЕСКОГО ТРЕЙДЕРА»</span>
+        <h2>Где именно вошёл бот, где вышел, сколько заработал и почему принял решение</h2>
+      </div>
+      <span class="panel-counter">ВСЕГО СДЕЛОК: {{ report.trades_count }} · WIN RATE: {{ report.win_rate_pct }}%</span>
+    </div>
+
+    {% if report.completed_trades %}
+      <table class="data-table">
         <thead>
           <tr>
-            <th>Время (UTC)</th>
-            <th>Close</th>
-            <th>ℓ1-Тренд</th>
-            <th>HMM</th>
-            <th>P(trend)</th>
-            <th>P(up|trend)</th>
-            <th>P(break≤H)</th>
-            <th>Позиция</th>
-            <th>Доля</th>
-            <th>Капитал</th>
-            <th>Статус риск-фильтра</th>
+            <th>#</th>
+            <th>Направление</th>
+            <th>Вход (время / цена)</th>
+            <th>Выход (время / цена)</th>
+            <th>Длительность</th>
+            <th>Доля капитала</th>
+            <th>Результат сделки</th>
+            <th>Почему бот вошёл и почему вышел</th>
           </tr>
         </thead>
         <tbody>
-          {% for st in report.steps %}
-          <tr>
-            <td class="mono">{{ st.timestamp }}</td>
-            <td class="mono">{{ st.close_price }}</td>
-            <td class="mono">{{ st.l1_trend_price }} ({{ st.l1_slope }})</td>
-            <td><span class="tag">{{ st.hmm_regime }}</span></td>
-            <td class="mono">{{ st.p_trend }}</td>
-            <td class="mono">{{ st.p_up }}</td>
-            <td class="mono">{{ st.p_break }}</td>
-            <td><strong>{{ st.direction }}</strong></td>
-            <td class="mono">{{ st.position_fraction }}</td>
-            <td class="mono">{{ st.equity }} ₽</td>
-            <td class="mono">{{ st.blocked_reason }}</td>
-          </tr>
+          {% for tr in report.completed_trades %}
+            <tr>
+              <td><strong>#{{ tr.trade_id }}</strong></td>
+              <td><span class="pill success">{{ tr.direction }}</span></td>
+              <td>{{ tr.entry_time }} · <strong>{{ tr.entry_price }} ₽</strong></td>
+              <td>{{ tr.exit_time }} · <strong>{{ tr.exit_price }} ₽</strong></td>
+              <td>{{ tr.bars_held }} св.</td>
+              <td>{{ tr.position_pct }}</td>
+              <td class="{% if tr.is_win %}positive{% else %}negative{% endif %}">
+                <strong>{{ tr.pnl_pct }}</strong><br>
+                <small>{{ tr.pnl_rub }}</small>
+              </td>
+              <td>
+                <div><strong>Вход:</strong> {{ tr.entry_reason }}</div>
+                <div style="margin-top:0.2rem;"><strong>Выход ({{ tr.exit_code }}):</strong> {{ tr.exit_reason }}</div>
+              </td>
+            </tr>
           {% endfor %}
         </tbody>
       </table>
-    </div>
+    {% else %}
+      <p class="empty-hint">
+        На выбранном участке вероятности тренда P(trend) не превысили порог a={{ report.params.trend_threshold_a }} —
+        снизьте порог a или выберите другой сценарий.
+      </p>
+    {% endif %}
   </section>
+
+  <!-- 5. ДЕТАЛИ ML-СЛОЯ: ТРИАДА ВЕРОЯТНОСТЕЙ, SHAP-ПРИЗНАКИ И СТАТИСТИЧЕСКАЯ ЗАЩИТА -->
+  <div class="split-2">
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">ТРИ ГОЛОВЫ МОДЕЛИ НА ТЕКУЩЕМ БАРЕ + ВКЛАД ПРИЗНАКОВ (SHAP)</span>
+          <h2>Вероятностный прогноз и главные факторы решения</h2>
+        </div>
+        <span class="panel-counter">ТОЧНЫЙ TREESHAP</span>
+      </div>
+
+      <div class="metric-ribbon">
+        <article class="metric-tile">
+          <span>1. ВЕРОЯТНОСТЬ ТРЕНДА P(trend)</span>
+          <strong>{{ report.triad.p_trend_pct }}%</strong>
+          <small>Порог входа a = {{ report.params.trend_threshold_a }}</small>
+        </article>
+        <article class="metric-tile">
+          <span>2. ВЕРОЯТНОСТЬ РОСТА P(up | trend)</span>
+          <strong>{{ report.triad.p_up_pct }}%</strong>
+          <small>Порог направления b = {{ report.params.direction_threshold_b }}</small>
+        </article>
+        <article class="metric-tile">
+          <span>3. РИСК РАЗВОРОТА P(break ≤ H)</span>
+          <strong>{{ report.triad.p_break_pct }}%</strong>
+          <small>Порог выхода = {{ report.params.break_exit_threshold }}</small>
+        </article>
+      </div>
+
+      <h3 style="margin-top: 1rem;">Какие признаки сильнее всего повлияли на решение (Топ-8 TreeSHAP)</h3>
+      <table class="data-table compact">
+        <thead>
+          <tr>
+            <th>Признак (нормализованный)</th>
+            <th>Вклад SHAP</th>
+            <th>Сила влияния</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in report.triad.shap %}
+            <tr>
+              <td><code>{{ item.feature }}</code></td>
+              <td><strong>{{ item.value }}</strong></td>
+              <td>
+                <div class="progress-track">
+                  <div class="progress-fill" style="width: {{ item.abs_pct }}%;"></div>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">ЗАЩИТА ОТ ПЕРЕОБУЧЕНИЯ, КАЛИБРОВКА И MLOPS</span>
+          <h2>Проверка статистической достоверности (CPCV, PBO, DSR, SPA)</h2>
+        </div>
+        <span class="pill {% if report.validation.passes_gate %}success{% else %}warning{% endif %}">
+          {% if report.validation.passes_gate %}СТАТИСТИЧЕСКИЙ ГЕЙТ ПРОЙДЕН{% else %}ТРЕБУЕТСЯ БОЛЬШЕ ДАННЫХ{% endif %}
+        </span>
+      </div>
+
+      <div class="metric-ribbon">
+        <article class="metric-tile">
+          <span>РИСК ПЕРЕОБУЧЕНИЯ PBO (CSCV)</span>
+          <strong>{{ report.validation.pbo_pct }}</strong>
+          <small>Норма &lt; 50% (логит {{ report.validation.pbo_logit }})</small>
+        </article>
+        <article class="metric-tile">
+          <span>DEFLATED SHARPE RATIO (DSR)</span>
+          <strong>{{ report.validation.dsr_pct }}</strong>
+          <small>Поправка на {{ report.validation.n_trials }} конфигураций</small>
+        </article>
+        <article class="metric-tile">
+          <span>ТЕСТЫ WHITE RC / HANSEN SPA</span>
+          <strong>p = {{ report.validation.white_rc_pvalue }} / {{ report.validation.hansen_spa_pvalue }}</strong>
+          <small>Блочный бутстрэп Поли — Романо</small>
+        </article>
+        <article class="metric-tile">
+          <span>ДРЕЙФ ПРИЗНАКОВ (PSI)</span>
+          <strong>{{ report.mlops.drift_status }} (max {{ report.mlops.max_psi }})</strong>
+          <small>{{ report.mlops.retrain_reason }}</small>
+        </article>
+      </div>
+
+      <h3 style="margin-top: 1rem;">Калибровка вероятностных голов (Brier Score и ECE)</h3>
+      <table class="data-table compact">
+        <thead>
+          <tr>
+            <th>Голова</th>
+            <th>Темп. T</th>
+            <th>Brier (до → после)</th>
+            <th>Brier Skill</th>
+            <th>ECE (до → после)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cal in report.calibration %}
+            <tr>
+              <td><strong>{{ cal.head_name }}</strong></td>
+              <td>{{ cal.temperature }}</td>
+              <td>{{ cal.brier_raw }} → <strong>{{ cal.brier_cal }}</strong></td>
+              <td>{{ cal.bss }}</td>
+              <td>{{ cal.ece_raw }} → <strong>{{ cal.ece_cal }}</strong></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <p style="margin-top: 0.75rem; font-size: 0.85rem; opacity: 0.8;">
+        <strong>Отбор признаков:</strong> {{ report.feature_selection.initial_count }} исходных →
+        {{ report.feature_selection.enet_count }} после ElasticNet (ℓ1+ℓ2) →
+        {{ report.feature_selection.stability_count }} после Walk-Forward Stability →
+        <strong>{{ report.feature_selection.final_count }} финальных признаков</strong> (SHA-256 датасета: <code>{{ report.mlops.sha256_short }}</code>).
+      </p>
+    </section>
+  </div>
+
 </div>

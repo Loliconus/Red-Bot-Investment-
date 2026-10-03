@@ -2,26 +2,29 @@
 {% block content %}
 <section class="page-heading">
   <div>
-    <span class="eyebrow">СИСТЕМА ВЕРОЯТНОСТНОЙ ОЦЕНКИ РЫНОЧНОГО РЕЖИМА</span>
-    <h1>Синтетический трейдер · Бэктест и Валидация</h1>
+    <span class="eyebrow">ML-АРЕНА И ВЕРОЯТНОСТНЫЙ БЭКТЕСТ · PYTHON 3.14</span>
+    <h1>Синтетический трейдер · Соревнование алгоритмов и разбор решений</h1>
     <p>
-      Трёхголовая вероятностная модель CatBoost (P(trend), P(up|trend), P(break≤H)) с HMM-фильтром Гамильтона,
-      разметкой Triple-Barrier + ℓ1-trend filtering, калибровкой PAVA и защитой от переобучения CPCV / PBO / DSR / SPA.
+      Наглядное сравнение трёхголовой вероятностной модели <strong>CatBoost Triad + HMM Гамильтона</strong>
+      против 5 других алгоритмов (<strong>LightGBM / HistGBDT</strong>, <strong>ElasticNet ML</strong>,
+      <strong>Пересечение средних 8/21</strong>, <strong>RSI(14)</strong> и <strong>Buy &amp; Hold IMOEX</strong>)
+      с отображением каждой точки входа/выхода и причин принятия решений простым человеческим языком.
     </p>
   </div>
-  <span class="pill success">ISOLATED POINT-IN-TIME ENGINE</span>
+  <span class="pill success">{{ report.ml_backend_summary if report else 'ML ENGINE ACTIVE' }}</span>
 </section>
 
 <section class="panel backtest-panel">
   <div class="panel-head">
     <div>
-      <span class="eyebrow">КОНФИГУРАЦИЯ ПРОГОНА (РАЗДЕЛЫ 1–6 ТЗ)</span>
-      <h2>Параметры модели, барьеров и риск-движка</h2>
+      <span class="eyebrow">ПУЛЬТ УПРАВЛЕНИЯ БЭКТЕСТОМ</span>
+      <h2>Выберите бумагу, рыночный сценарий и пороги принятия решений</h2>
     </div>
-    <span class="panel-counter">FORWARD-FILL ТОЛЬКО ПО ЗАКРЫТЫМ БАРАМ</span>
+    <span class="panel-counter">БЕЗ УТЕЧКИ БУДУЩЕГО (POINT-IN-TIME)</span>
   </div>
 
   <form
+    id="synthetic-backtest-form"
     method="post"
     action="/backtest/run"
     hx-post="/backtest/run"
@@ -30,19 +33,32 @@
     class="settings-grid"
   >
     <div class="field-block">
-      <label for="bt-instrument">Инструмент корзины</label>
+      <label for="bt-instrument">Бумага из корзины</label>
       <select id="bt-instrument" name="instrument_uid">
         {% for item in instruments %}
           <option value="{{ item.uid }}" {% if report and report.instrument_uid == item.uid %}selected{% endif %}>
-            {{ item.ticker }} · {{ item.uid }}
+            {{ item.ticker }} · {{ item.name or item.uid }}
           </option>
         {% endfor %}
       </select>
-      <small>Кросс-активный поводырь: индекс IMOEX</small>
+      <small>Актив + поводырь индекс МосБиржи (IMOEX)</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-tf">Рабочий таймфрейм</label>
+      <label for="bt-scenario">Рыночный сценарий (источник котировок)</label>
+      <select id="bt-scenario" name="scenario">
+        {% set cur_scen = report.params.scenario if report else 'auto' %}
+        <option value="auto" {% if cur_scen == 'auto' %}selected{% endif %}>Авто: БД T-Invest / Полный цикл MOEX</option>
+        <option value="cycle" {% if cur_scen == 'cycle' %}selected{% endif %}>Полный цикл: Тренд → Пила → Обвал → Ралли</option>
+        <option value="bull" {% if cur_scen == 'bull' %}selected{% endif %}>Бычий рынок: волны роста с откатами</option>
+        <option value="chop" {% if cur_scen == 'chop' %}selected{% endif %}>Боковая «Пила»: проверка защиты от шума</option>
+        <option value="crash_recovery" {% if cur_scen == 'crash_recovery' %}selected{% endif %}>Обвал (Паника) и V-образный разворот</option>
+      </select>
+      <small>Позволяет проверить поведение 6 алгоритмов в разных фазах</small>
+    </div>
+
+    <div class="field-block">
+      <label for="bt-tf">Таймфрейм свечей</label>
       <select id="bt-tf" name="timeframe">
         {% for tf_opt in ["5m", "15m", "1h", "4h", "1d"] %}
           <option value="{{ tf_opt }}" {% if report and report.params.timeframe == tf_opt %}selected{% endif %}>
@@ -50,75 +66,71 @@
           </option>
         {% endfor %}
       </select>
-      <small>Иерархия 1D/4H → 1H → 15m/5m</small>
+      <small>Рабочий интервал закрытых свечей</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-bars">Глубина выборки (баров)</label>
-      <input id="bt-bars" type="number" name="bar_count" min="40" max="300" value="{{ report.params.bar_count if report else 96 }}">
-      <small>Авто-разделение Dev / Frozen Holdout</small>
+      <label for="bt-bars">Длина истории (свечей)</label>
+      <input id="bt-bars" type="number" name="bar_count" min="40" max="300" value="{{ report.params.bar_count if report else 120 }}">
+      <small>Первые 75% — обучение/отбор, 25% — чистый тест (Holdout)</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-cap">Начальный капитал, ₽</label>
-      <input id="bt-cap" type="number" name="initial_capital" step="10000" value="{{ report.params.initial_capital if report else '1000000' }}">
-      <small>Расчёт лотов строго в Decimal</small>
+      <label for="bt-cap">Стартовый капитал, ₽</label>
+      <input id="bt-cap" type="number" name="initial_capital" step="50000" value="{{ report.params.initial_capital if report else '1000000' }}">
+      <small>Одинаковый стартовый баланс для всех 6 алгоритмов</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-horizon">Горизонт тройного барьера H</label>
+      <label for="bt-horizon">Горизонт прогноза H (свечей)</label>
       <input id="bt-horizon" type="number" name="horizon_bars" min="3" max="36" value="{{ report.params.horizon_bars if report else 8 }}">
-      <small>Вертикальный барьер (баров)</small>
+      <small>На сколько баров вперёд модель ждёт тейк или разворот</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-ktp">Множитель Take-Profit (k_tp · ATR)</label>
+      <label for="bt-ktp">Цель прибыли Take-Profit (в ATR)</label>
       <input id="bt-ktp" type="number" name="k_tp" step="0.1" min="0.5" max="6.0" value="{{ report.params.k_tp if report else '1.8' }}">
-      <small>Верхний барьер волатильности</small>
+      <small>При каком росте (в единицах волатильности) фиксировать прибыль</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-ksl">Множитель Stop-Loss (k_sl · ATR)</label>
+      <label for="bt-ksl">Защитный Stop-Loss (в ATR)</label>
       <input id="bt-ksl" type="number" name="k_sl" step="0.1" min="0.3" max="5.0" value="{{ report.params.k_sl if report else '1.2' }}">
-      <small>Нижний барьер волатильности</small>
+      <small>Максимально допустимый откат против позиции</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-a">Порог режима P(trend) &gt; a</label>
+      <label for="bt-a">Фильтр боковика: мин. P(тренд) &gt; a</label>
       <input id="bt-a" type="number" name="trend_threshold_a" step="0.01" min="0.30" max="0.90" value="{{ report.params.trend_threshold_a if report else '0.52' }}">
-      <small>В боковике (P(trend) ≤ a) не торгуем</small>
+      <small>Если вероятность тренда ниже — бот сидит в кэше и пережидает «пилу»</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-b">Порог направления P(up|trend) ≥ b</label>
+      <label for="bt-b">Уверенность в росте: P(рост|тренд) ≥ b</label>
       <input id="bt-b" type="number" name="direction_threshold_b" step="0.01" min="0.50" max="0.90" value="{{ report.params.direction_threshold_b if report else '0.53' }}">
-      <small>Условная вероятность импульса</small>
+      <small>Минимальная вероятность того, что тренд направлен вверх</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-brk">Аварийный выход P(break≤H) ≥</label>
+      <label for="bt-brk">Защита от разворота: макс. P(слом≤H)</label>
       <input id="bt-brk" type="number" name="break_exit_threshold" step="0.01" min="0.35" max="0.95" value="{{ report.params.break_exit_threshold if report else '0.72' }}">
-      <small>Сжатие позиции (1 − P(break))</small>
+      <small>Если риск скорого разворота выше — бот досрочно кроет сделку</small>
     </div>
 
     <div class="field-block">
-      <label for="bt-depth">Глубина деревьев CatBoost (4–6)</label>
-      <input id="bt-depth" type="number" name="catboost_depth" min="4" max="6" value="{{ report.params.catboost_depth if report else 4 }}">
-      <small>Симметричные деревья (Oblivious Trees)</small>
-    </div>
-
-    <div class="field-block">
-      <label for="bt-comm">Комиссия / Проскальзывание (bps)</label>
+      <label for="bt-comm">Комиссия брокера и проскальзывание (bps)</label>
       <div class="form-row">
         <input type="number" name="commission_bps" step="0.5" min="0" max="50" value="{{ report.params.commission_bps if report else '5.0' }}" aria-label="Комиссия bps">
         <input type="number" name="slippage_bps" step="0.5" min="0" max="50" value="{{ report.params.slippage_bps if report else '5.0' }}" aria-label="Проскальзывание bps">
+        <input type="hidden" name="catboost_depth" value="{{ report.params.catboost_depth if report else 4 }}">
+        <input type="hidden" name="catboost_iterations" value="{{ report.params.catboost_iterations if report else 36 }}">
       </div>
-      <small>Учитывается у модели и всех 3 бенчмарков</small>
+      <small>5 bps = 0.05% за сделку (списывается у всех 6 алгоритмов)</small>
     </div>
 
     <div class="settings-submit">
-      <span>PURGED K-FOLD + EMBARGO · CPCV · PBO · DSR · WHITE RC · HANSEN SPA</span>
-      <button type="submit" class="button primary">Запустить вероятностный бэктест</button>
+      <span>ОБУЧЕНИЕ CATBOOST TRIAD + HMM · ПЕРЕРАСЧЁТ 6 АЛГОРИТМОВ И ГРАФИКОВ</span>
+      <button type="submit" class="button primary">Запустить соревнование алгоритмов и бэктест</button>
     </div>
   </form>
 </section>

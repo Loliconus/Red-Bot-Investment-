@@ -1,7 +1,8 @@
-"""Интерактивный бэктест и статистическая валидация «Синтетический трейдер» (GUI)."""
+"""Интерактивный бэктест, соревнование алгоритмов и валидация «Синтетический трейдер» (GUI)."""
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -13,9 +14,19 @@ from application.use_cases.run_backtest import (
     BacktestRunParameters,
     run_synthetic_backtest,
 )
-from core.synthetic import SyntheticTraderEvaluationReport
+from core.synthetic import SyntheticTraderEvaluationReport, translate_reason_to_human
 
 router = APIRouter(tags=["backtest"], dependencies=[Depends(require_session)])
+
+ALGO_COLORS: dict[str, str] = {
+    "Buy & Hold IMOEX": "#64748b",
+    "LightGBM (Single-Head ML)": "#3b82f6",
+    "HistGBDT (Single-Head ML)": "#3b82f6",
+    "LightGBM / HistGBDT (Single-Head ML)": "#3b82f6",
+    "ElasticNet (Linear ML)": "#8b5cf6",
+    "MA Crossover (8/21)": "#f59e0b",
+    "RSI(14) Bot": "#10b981",
+}
 
 
 def _safe_decimal(value: Any, default: Decimal, *, lo: Decimal, hi: Decimal) -> Decimal:
@@ -34,11 +45,26 @@ def _safe_int(value: Any, default: int, *, lo: int, hi: int) -> int:
     return min(hi, max(lo, parsed))
 
 
+def _align_pct_curve(
+    equity_curve: tuple[Decimal, ...],
+    initial_capital: Decimal,
+    target_len: int,
+) -> list[float]:
+    """Преобразует кривую капитала в кумулятивные проценты доходности длины ``target_len``."""
+    if not equity_curve or initial_capital <= Decimal("0") or target_len <= 0:
+        return [0.0] * max(target_len, 1)
+    init_f = float(initial_capital)
+    pcts = [round((float(eq) / init_f - 1.0) * 100.0, 2) for eq in equity_curve]
+    if len(pcts) >= target_len:
+        return pcts[:target_len]
+    return pcts + [pcts[-1]] * (target_len - len(pcts))
+
+
 def _serialize_report(
     report: SyntheticTraderEvaluationReport,
     params: BacktestRunParameters,
 ) -> dict[str, Any]:
-    """Преобразует доменный отчёт «Синтетического трейдера» в контекст шаблона."""
+    """Преобразует доменный отчёт «Синтетического трейдера» в контекст шаблона и JSON графиков."""
     shap_items = [
         {"feature": k, "value": f"{v:+.4f}", "abs_pct": min(100, int(abs(v) * 220))}
         for k, v in report.latest_triad.top_shap_contributors.items()
@@ -71,7 +97,15 @@ def _serialize_report(
     bench_rows = [
         {
             "name": b.name,
+            "category": b.category,
+            "description": b.description,
+            "color": ALGO_COLORS.get(b.name, "#0ea5e9"),
             "total_return_pct": str(b.total_return_pct),
+            "is_positive": b.total_return_pct >= Decimal("0"),
+            "beats_bot": b.total_return_pct > report.total_return_pct,
+            "diff_vs_bot": str(
+                (report.total_return_pct - b.total_return_pct).quantize(Decimal("0.01"))
+            ),
             "max_drawdown_pct": str(b.max_drawdown_pct),
             "sharpe": f"{b.sharpe_ratio:.2f}",
             "trades": b.trades_count,
@@ -91,6 +125,26 @@ def _serialize_report(
         for k, v in list(report.drift_diagnostic.psi_by_feature.items())[:10]
     ]
 
+    trade_rows = [
+        {
+            "trade_id": tr.trade_id,
+            "direction": tr.direction,
+            "entry_time": tr.entry_timestamp.strftime("%d.%m %H:%M"),
+            "exit_time": tr.exit_timestamp.strftime("%d.%m %H:%M"),
+            "entry_price": str(tr.entry_price),
+            "exit_price": str(tr.exit_price),
+            "bars_held": tr.bars_held,
+            "position_pct": f"{tr.position_fraction * Decimal('100'):.0f}%",
+            "pnl_pct": f"{'+' if tr.pnl_pct >= Decimal('0') else ''}{tr.pnl_pct}%",
+            "pnl_rub": f"{'+' if tr.pnl_rub >= Decimal('0') else ''}{tr.pnl_rub} ₽",
+            "is_win": tr.pnl_rub >= Decimal("0"),
+            "entry_reason": tr.entry_reason,
+            "exit_reason": tr.exit_reason,
+            "exit_code": tr.exit_code,
+        }
+        for tr in report.completed_trades
+    ]
+
     recent_steps = [
         {
             "timestamp": st.timestamp.strftime("%Y-%m-%d %H:%M"),
@@ -105,22 +159,101 @@ def _serialize_report(
             "position_fraction": f"{st.position_fraction * Decimal('100'):.1f}%",
             "equity": str(st.equity),
             "blocked_reason": st.blocked_reason or "ACTIVE_SIGNAL",
+            "human_explanation": st.human_explanation,
+            "signal_action": st.signal_action,
+            "signal_label": st.signal_label,
         }
-        for st in report.step_records[-24:]
+        for st in report.step_records[-30:]
     ]
+
+    # Формируем полный синхронный пакет данных для 3 интерактивных графиков
+    n_steps = len(report.step_records)
+    init_cap = report.initial_capital
+    bot_eq_tuple = tuple(st.equity for st in report.step_records)
+    bot_curve_pct = _align_pct_curve(bot_eq_tuple, init_cap, n_steps)
+
+    bot_sign = "+" if report.total_return_pct >= Decimal("0") else ""
+    algorithms_chart = [
+        {
+            "id": "synthetic_trader",
+            "name": "Синтетический трейдер (CatBoost Triad + HMM)",
+            "color": "#e11d48",
+            "width": 3.2,
+            "return_pct": f"{bot_sign}{report.total_return_pct}%",
+            "max_dd_pct": f"{report.max_drawdown_pct}%",
+            "trades": report.trades_count,
+            "curve_pct": bot_curve_pct,
+        }
+    ]
+    for b in report.benchmarks:
+        b_sign = "+" if b.total_return_pct >= Decimal("0") else ""
+        algorithms_chart.append(
+            {
+                "id": b.name.lower().replace(" ", "_"),
+                "name": b.name,
+                "color": ALGO_COLORS.get(b.name, "#0ea5e9"),
+                "width": 1.9,
+                "return_pct": f"{b_sign}{b.total_return_pct}%",
+                "max_dd_pct": f"{b.max_drawdown_pct}%",
+                "trades": b.trades_count,
+                "curve_pct": _align_pct_curve(b.equity_curve, init_cap, n_steps),
+            }
+        )
+
+    chart_signals = []
+    for idx, st in enumerate(report.step_records):
+        if st.signal_action in {"BUY", "EXIT"}:
+            chart_signals.append(
+                {
+                    "bar": idx,
+                    "action": st.signal_action,
+                    "price": float(st.close_price),
+                    "label": st.signal_label,
+                    "reason": st.human_explanation,
+                    "time": st.timestamp.strftime("%d.%m %H:%M"),
+                }
+            )
+
+    chart_payload = {
+        "ticker": report.ticker,
+        "timeframe": report.timeframe,
+        "timestamps": [st.timestamp.strftime("%d.%m %H:%M") for st in report.step_records],
+        "prices": [round(float(st.close_price), 2) for st in report.step_records],
+        "l1_trend": [round(float(st.l1_trend_price), 2) for st in report.step_records],
+        "regimes": [st.hmm_regime.upper() for st in report.step_records],
+        "p_trend": [round(st.p_trend * 100.0, 1) for st in report.step_records],
+        "p_up": [round(st.p_up_given_trend * 100.0, 1) for st in report.step_records],
+        "p_break": [round(st.p_break_within_h * 100.0, 1) for st in report.step_records],
+        "explanations": [st.human_explanation for st in report.step_records],
+        "thr_a": round(float(params.trend_threshold_a) * 100.0, 1),
+        "thr_b": round(float(params.direction_threshold_b) * 100.0, 1),
+        "thr_break": round(float(params.break_exit_threshold) * 100.0, 1),
+        "signals": chart_signals,
+        "algorithms": algorithms_chart,
+    }
+
+    pnl_rub_val = (report.final_equity - report.initial_capital).quantize(Decimal("0.01"))
+    pnl_rub_str = f"{'+' if pnl_rub_val >= Decimal('0') else ''}{pnl_rub_val} ₽"
 
     return {
         "instrument_uid": report.instrument_uid,
         "ticker": report.ticker,
         "timeframe": report.timeframe,
+        "scenario": params.scenario,
         "initial_capital": str(report.initial_capital),
         "final_equity": str(report.final_equity),
+        "pnl_rub": pnl_rub_str,
         "total_return_pct": str(report.total_return_pct),
+        "is_profitable": report.total_return_pct >= Decimal("0"),
         "max_drawdown_pct": str(report.max_drawdown_pct),
         "oos_sharpe": f"{report.oos_sharpe_ratio:.2f}",
         "win_rate_pct": str(report.win_rate_pct),
         "profit_factor": str(report.profit_factor),
         "trades_count": report.trades_count,
+        "ml_backend_summary": report.ml_backend_summary,
+        "human_summary": report.human_summary,
+        "completed_trades": trade_rows,
+        "chart_json": json.dumps(chart_payload, ensure_ascii=False),
         "triad": {
             "p_trend_pct": f"{report.latest_triad.p_trend * 100:.1f}",
             "p_up_pct": f"{report.latest_triad.p_up_given_trend * 100:.1f}",
@@ -159,6 +292,7 @@ def _serialize_report(
             "vol_scalar": str(report.latest_risk_decision.volatility_scalar),
             "break_scalar": str(report.latest_risk_decision.break_penalty_scalar),
             "blocked_reason": report.latest_risk_decision.blocked_reason or "Разрешён вход",
+            "human_reason": translate_reason_to_human(report.latest_risk_decision.blocked_reason),
         },
         "feature_selection": {
             "initial_count": len(report.feature_selection.initial_features),
@@ -211,6 +345,7 @@ def _serialize_report(
         "params": {
             "instrument_uid": params.instrument_uid,
             "timeframe": params.timeframe,
+            "scenario": params.scenario,
             "bar_count": params.bar_count,
             "initial_capital": str(params.initial_capital),
             "commission_bps": str(params.commission_bps),
@@ -241,16 +376,18 @@ async def page(request: Request, context: ContextDep) -> Any:
     )
     uid = request.query_params.get("instrument_uid", default_uid)
     tf = request.query_params.get("timeframe", "1h")
+    scen = request.query_params.get("scenario", "auto")
     params = BacktestRunParameters(
         instrument_uid=uid,
         ticker=_resolve_ticker(context, uid),
         timeframe=tf if tf in {"5m", "15m", "1h", "4h", "1d"} else "1h",
+        scenario=scen if scen in {"auto", "cycle", "bull", "chop", "crash_recovery"} else "auto",
     )
     report = await run_synthetic_backtest(context, params)
     return render_page(
         request,
         "pages/backtest.html",
-        title="Синтетический трейдер — Бэктест и Валидация",
+        title="Синтетический трейдер — Соревнование алгоритмов и Бэктест",
         section="backtest",
         data={
             "instruments": context.tradable_instruments,
@@ -267,7 +404,8 @@ async def launch(
     _session: SessionDep,
     instrument_uid: str = Form("uid-sber"),
     timeframe: str = Form("1h"),
-    bar_count: int = Form(96),
+    scenario: str = Form("auto"),
+    bar_count: int = Form(120),
     initial_capital: str = Form("1000000"),
     commission_bps: str = Form("5.0"),
     slippage_bps: str = Form("5.0"),
@@ -278,14 +416,18 @@ async def launch(
     direction_threshold_b: str = Form("0.53"),
     break_exit_threshold: str = Form("0.72"),
     catboost_depth: int = Form(4),
-    catboost_iterations: int = Form(32),
+    catboost_iterations: int = Form(36),
 ) -> Any:
     tf_clean = timeframe if timeframe in {"5m", "15m", "1h", "4h", "1d"} else "1h"
+    scen_clean = (
+        scenario if scenario in {"auto", "cycle", "bull", "chop", "crash_recovery"} else "auto"
+    )
     params = BacktestRunParameters(
         instrument_uid=instrument_uid,
         ticker=_resolve_ticker(context, instrument_uid),
         timeframe=tf_clean,
-        bar_count=_safe_int(bar_count, 96, lo=40, hi=300),
+        scenario=scen_clean,
+        bar_count=_safe_int(bar_count, 120, lo=40, hi=300),
         initial_capital=_safe_decimal(
             initial_capital,
             Decimal("1000000"),
@@ -326,7 +468,7 @@ async def launch(
             hi=Decimal("0.95"),
         ),
         catboost_depth=_safe_int(catboost_depth, 4, lo=4, hi=6),
-        catboost_iterations=_safe_int(catboost_iterations, 32, lo=12, hi=80),
+        catboost_iterations=_safe_int(catboost_iterations, 36, lo=12, hi=80),
     )
     report = await run_synthetic_backtest(context, params)
     serialized = _serialize_report(report, params)
@@ -341,7 +483,7 @@ async def launch(
     return render_page(
         request,
         "pages/backtest.html",
-        title="Синтетический трейдер — Бэктест и Валидация",
+        title="Синтетический трейдер — Соревнование алгоритмов и Бэктест",
         section="backtest",
         data={
             "instruments": context.tradable_instruments,

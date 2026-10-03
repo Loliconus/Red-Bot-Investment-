@@ -35,6 +35,13 @@ dependencies = [
 
     # SDK и так тянет grpcio транзитивно, но явный пин полезен для контроля совместимости.
     "grpcio>=1.68",
+
+    # Научный и ML-стек «Синтетического трейдера» (доступны колёса cp313/cp314)
+    "numpy>=2.1",
+    "scipy>=1.14",
+    "scikit-learn>=1.6",
+    "catboost>=1.2.10",
+    "lightgbm>=4.6",
 ]
 
 # -----------------------------------------------------------------------------
@@ -119,6 +126,7 @@ ignore = [
     "RUF002",   # кириллица в докстрингах — проект русскоязычный
     "RUF003",   # типографские символы (×, —) в комментариях — осознанный стиль
     "RUF001",   # типографские символы в строках — осознанный стиль
+    "RUF022",   # порядок __all__ с аббревиатурами (HMM / TFT)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -147,7 +155,26 @@ show_error_codes = true
 exclude = ["build", "dist", ".venv", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["t_tech.*", "duckdb", "keyring", "typer", "uvicorn.*", "grpc", "grpc.*", "psutil"]
+module = [
+    "t_tech.*",
+    "duckdb",
+    "keyring",
+    "typer",
+    "uvicorn.*",
+    "grpc",
+    "grpc.*",
+    "psutil",
+    "numpy",
+    "numpy.*",
+    "scipy",
+    "scipy.*",
+    "sklearn",
+    "sklearn.*",
+    "catboost",
+    "catboost.*",
+    "lightgbm",
+    "lightgbm.*",
+]
 ignore_missing_imports = true
 
 # -----------------------------------------------------------------------------

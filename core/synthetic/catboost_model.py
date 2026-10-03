@@ -224,6 +224,7 @@ class SingleHeadCatBoostClassifier:
         self.best_iteration: int = 0
         self.validation_log_loss: float = 0.0
         self._native_model: object | None = None
+        self.backend_name: str = "Oblivious GBDT (Symmetric Trees)"
 
     def fit(
         self,
@@ -267,9 +268,17 @@ class SingleHeadCatBoostClassifier:
             val_cat_enc = self.encoder.transform(val_cat, cat_names)
             full_val_x = [list(val_x[i]) + val_cat_enc[i] for i in range(len(val_x))]
             effective_val_y = list(val_y)
+            fit_indices = list(range(n_train))
+        elif n_train >= 20:
+            # Стратифицированный по времени OOF-фолд (каждый 5-й бар из всех фаз рынка),
+            # чтобы валидация и калибровка охватывали и TREND, и CHOP, и PANIC
+            val_indices = [i for i in range(n_train) if i % 5 == 4]
+            fit_indices = [i for i in range(n_train) if i % 5 != 4]
+            full_val_x = [full_train_x[i] for i in val_indices]
+            effective_val_y = [train_y[i] for i in val_indices]
         else:
-            # Хронологический хвост 20% как валидационный фолд для early stopping и калибровки
             split_idx = max(1, int(n_train * 0.8))
+            fit_indices = list(range(n_train))
             full_val_x = full_train_x[split_idx:]
             effective_val_y = list(train_y[split_idx:])
 
@@ -301,7 +310,7 @@ class SingleHeadCatBoostClassifier:
 
             grad = [0.0] * n_train
             hess = [0.0] * n_train
-            for i in range(n_train):
+            for i in fit_indices:
                 p_i = _sigmoid(train_margins[i])
                 cw = w_pos if train_y[i] == 1 else w_neg
                 bw = boot_w[i] * cw
@@ -319,12 +328,12 @@ class SingleHeadCatBoostClassifier:
                 best_f = 0
                 best_thr = 0.0
 
-                # Перебираем признаки и квантильные пороги
+                # Перебираем признаки и квантильные пороги только по обучающим индексам fit_indices
                 for f_idx in range(n_total_features):
                     for thr in thresholds_by_f[f_idx]:
                         g_buckets = [0.0] * n_leaves_next
                         h_buckets = [0.0] * n_leaves_next
-                        for i in range(n_train):
+                        for i in fit_indices:
                             next_leaf = leaf_indices[i] | (
                                 (1 << d) if full_train_x[i][f_idx] > thr else 0
                             )
@@ -350,7 +359,7 @@ class SingleHeadCatBoostClassifier:
             g_leaf = [0.0] * n_final_leaves
             h_leaf = [0.0] * n_final_leaves
             c_leaf = [0.0] * n_final_leaves
-            for i in range(n_train):
+            for i in fit_indices:
                 lid = leaf_indices[i]
                 g_leaf[lid] += grad[i]
                 h_leaf[lid] += hess[i]
@@ -410,8 +419,10 @@ class SingleHeadCatBoostClassifier:
         self.trees = tuple(centered_trees)
         self.validation_log_loss = best_val_loss
 
-        # Опциональная синхронизация с нативным CatBoostClassifier при наличии колеса в среде
-        self._try_fit_native_catboost(full_train_x, train_y, full_val_x, effective_val_y)
+        # Синхронизация с нативным CatBoostClassifier / LightGBM / HistGBDT при наличии в среде
+        fit_sub_x = [full_train_x[i] for i in fit_indices]
+        fit_sub_y = [train_y[i] for i in fit_indices]
+        self._try_fit_native_catboost(fit_sub_x, fit_sub_y, full_val_x, effective_val_y)
 
         # Пост-калибровка на валидационном фолде
         raw_val_probs = [self.predict_raw_proba_row(row) for row in full_val_x]
@@ -425,17 +436,14 @@ class SingleHeadCatBoostClassifier:
         val_x: Sequence[Sequence[float]],
         val_y: Sequence[int],
     ) -> None:
-        """Если в окружении установлен C++ пакет ``catboost``, обучает нативный классификатор."""
-        try:
-            cb_mod = importlib.import_module("catboost")
-        except ImportError:
-            self._native_model = None
-            return
-
+        """Обучает нативный C++ ``catboost.CatBoostClassifier`` (или ``HistGradientBoosting``)."""
         if len(set(train_y)) < 2:
             self._native_model = None
             return
+
+        # 1. Нативный CatBoost C++ (колесо cp313/cp314)
         try:
+            cb_mod = importlib.import_module("catboost")
             cls = cb_mod.CatBoostClassifier(
                 depth=self.params.depth,
                 iterations=self.params.iterations,
@@ -447,11 +455,37 @@ class SingleHeadCatBoostClassifier:
                 bagging_temperature=self.params.bagging_temperature,
                 random_seed=self.params.random_seed,
                 verbose=False,
+                allow_writing_files=False,
             )
-            cls.fit(train_x, list(train_y), eval_set=(val_x, list(val_y)), verbose=False)
+            cls.fit(
+                list(train_x),
+                list(train_y),
+                eval_set=(list(val_x), list(val_y)),
+                verbose=False,
+            )
             self._native_model = cls
-        except (RuntimeError, ValueError, TypeError):
+            self.backend_name = "CatBoost C++ (native) + TreeSHAP"
+            return
+        except (ImportError, RuntimeError, ValueError, TypeError):
             self._native_model = None
+
+        # 2. Резервный Cython-бустер scikit-learn HistGradientBoostingClassifier
+        try:
+            sk_ens = importlib.import_module("sklearn.ensemble")
+            hgb = sk_ens.HistGradientBoostingClassifier(
+                max_depth=self.params.depth,
+                max_iter=self.params.iterations,
+                learning_rate=self.params.learning_rate,
+                l2_regularization=self.params.l2_leaf_reg,
+                min_samples_leaf=max(3, len(train_x) // 12),
+                random_state=self.params.random_seed,
+            )
+            hgb.fit(list(train_x), list(train_y))
+            self._native_model = hgb
+            self.backend_name = "HistGradientBoosting (scikit-learn) + Oblivious TreeSHAP"
+        except (ImportError, RuntimeError, ValueError, TypeError):
+            self._native_model = None
+            self.backend_name = "Oblivious GBDT (Symmetric Trees)"
 
     def encode_row(
         self,

@@ -170,14 +170,15 @@ class HamiltonMarkovRegimeDetector:
         d_p80 = max(drifts[min(n - 1, int(n * 0.80))], d_med * 1.5)
         v_med = max(vols[n // 2], 1e-4)
         v_p90 = max(vols[min(n - 1, int(n * 0.90))], v_med * 2.0)
+        panic_vol_floor = max(v_p90 * 1.35, v_med * 2.20, 0.0075)
 
         self.emissions = [
             # 0: TREND — высокий направленный дрейф, умеренная волатильность
             GaussianEmission2D(
                 mean_drift=d_p80,
                 std_drift=max(d_med * 0.7, 1e-4),
-                mean_vol=v_med * 1.15,
-                std_vol=max(v_med * 0.5, 1e-4),
+                mean_vol=v_med * 1.05,
+                std_vol=max(v_med * 0.45, 1e-4),
             ),
             # 1: CHOP — малый дрейф, низкая/средняя волатильность
             GaussianEmission2D(
@@ -186,12 +187,12 @@ class HamiltonMarkovRegimeDetector:
                 mean_vol=v_med * 0.75,
                 std_vol=max(v_med * 0.4, 1e-4),
             ),
-            # 2: PANIC — всплеск волатильности
+            # 2: PANIC — экстремальный всплеск волатильности (>= 2.2x медианы)
             GaussianEmission2D(
                 mean_drift=d_p80 * 1.3,
                 std_drift=max(d_p80, 1e-4),
-                mean_vol=v_p90 * 1.35,
-                std_vol=max(v_p90 * 0.7, 1e-4),
+                mean_vol=panic_vol_floor,
+                std_vol=max(panic_vol_floor * 0.5, 1e-4),
             ),
         ]
 
@@ -292,7 +293,19 @@ class HamiltonMarkovRegimeDetector:
                 trend_idx, chop_idx = rem[1], rem[0]
 
             order = [trend_idx, chop_idx, panic_idx]
-            self.emissions = [new_emissions[idx] for idx in order]
+            ordered_em = [new_emissions[idx] for idx in order]
+            # Запрещаем кластеру PANIC схлопываться на обычную трендовую волатильность
+            trend_em = ordered_em[0]
+            panic_em = ordered_em[2]
+            min_panic_v = max(panic_vol_floor, trend_em.mean_vol * 1.85)
+            if panic_em.mean_vol < min_panic_v:
+                ordered_em[2] = GaussianEmission2D(
+                    mean_drift=max(panic_em.mean_drift, d_p80 * 1.15),
+                    std_drift=max(panic_em.std_drift, d_med * 0.8),
+                    mean_vol=min_panic_v,
+                    std_vol=max(panic_em.std_vol, min_panic_v * 0.45),
+                )
+            self.emissions = ordered_em
             self.transition_matrix = [
                 [self.transition_matrix[r][c] for c in order] for r in order
             ]

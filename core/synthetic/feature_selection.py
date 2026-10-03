@@ -85,6 +85,24 @@ def fit_elastic_net_weights(
     y_mean = sum(targets) / n_samples
     y_centered = [float(y) - y_mean for y in targets]
 
+    try:
+        from sklearn.linear_model import ElasticNet
+
+        enet = ElasticNet(
+            alpha=alpha,
+            l1_ratio=l1_ratio,
+            fit_intercept=False,
+            max_iter=max(max_iterations * 5, 500),
+            tol=tol,
+            random_state=42,
+        )
+        enet.fit(x_std, y_centered)
+        coefs = getattr(enet, "coef_", None)
+        if coefs is not None and len(coefs) == n_features:
+            return {feature_names[j]: float(coefs[j]) for j in range(n_features)}
+    except (ImportError, ValueError, RuntimeError):
+        pass
+
     weights = [0.0] * n_features
     residual = list(y_centered)
     l1_pen = alpha * l1_ratio

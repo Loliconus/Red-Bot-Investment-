@@ -14,6 +14,8 @@ from core.synthetic.advanced_models import (
 from core.synthetic.benchmarks import (
     BenchmarkRunResult,
     run_buy_and_hold_benchmark,
+    run_elastic_net_trend_benchmark,
+    run_lightgbm_single_head_benchmark,
     run_ma_crossover_benchmark,
     run_rsi_benchmark,
 )
@@ -34,8 +36,11 @@ from core.synthetic.catboost_model import (
 )
 from core.synthetic.engine import (
     SyntheticStepRecord,
+    SyntheticTradeExecutionRecord,
     SyntheticTraderEngine,
     SyntheticTraderEvaluationReport,
+    generate_reference_moex_series,
+    translate_reason_to_human,
 )
 from core.synthetic.feature_selection import (
     FeatureSelectionReport,
@@ -127,8 +132,8 @@ __all__ = [
     "FeatureSelectionReport",
     "FrozenHoldoutPartition",
     "GaussianEmission2D",
-    "HMMRegimePosterior",
     "HamiltonMarkovRegimeDetector",
+    "HMMRegimePosterior",
     "L1TrendFilterResult",
     "L1TrendSegmentPoint",
     "ObliviousTree",
@@ -150,10 +155,11 @@ __all__ = [
     "SyntheticRiskConfig",
     "SyntheticStepRecord",
     "SyntheticTimeframe",
+    "SyntheticTradeExecutionRecord",
     "SyntheticTraderEngine",
     "SyntheticTraderEvaluationReport",
-    "TFTSelectionOutput",
     "TemporalFusionVariableSelector",
+    "TFTSelectionOutput",
     "TripleBarrierConfig",
     "TripleBarrierEvent",
     "bar_close_timestamp",
@@ -178,14 +184,18 @@ __all__ = [
     "extract_layer_a_features",
     "extract_layer_b_features",
     "fit_elastic_net_weights",
+    "generate_reference_moex_series",
     "is_bar_closed_at",
     "partition_frozen_holdout",
     "resample_candles",
     "run_buy_and_hold_benchmark",
+    "run_elastic_net_trend_benchmark",
     "run_feature_selection_pipeline",
+    "run_lightgbm_single_head_benchmark",
     "run_ma_crossover_benchmark",
     "run_rsi_benchmark",
     "solve_l1_trend_filter",
     "timeframe_duration",
+    "translate_reason_to_human",
     "verify_no_lookahead_leakage",
 ]
