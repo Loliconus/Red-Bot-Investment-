@@ -45,8 +45,8 @@
         <div>Источник: <strong>{{ report.data_source_label }}</strong></div>
         <div>Записей в таблице <code>candles</code>: <strong class="mono">{{ report.db_candles_count }}</strong> свечей</div>
         <div>Окно расчёта: <strong class="mono">{{ report.dataset_manifest.bar_count }}</strong> баров ({{ report.timeframe }})</div>
-        <div>Первая свеча: <code class="mono">{{ report.dataset_manifest.first_timestamp.strftime('%Y-%m-%d %H:%M UTC') }}</code></div>
-        <div>Последняя свеча: <code class="mono">{{ report.dataset_manifest.last_timestamp.strftime('%Y-%m-%d %H:%M UTC') }}</code></div>
+        <div>Первая свеча: <code class="mono">{{ report.dataset_manifest.start_timestamp.strftime('%Y-%m-%d %H:%M UTC') }}</code></div>
+        <div>Последняя свеча: <code class="mono">{{ report.dataset_manifest.end_timestamp.strftime('%Y-%m-%d %H:%M UTC') }}</code></div>
         <div>Разбиение без утечки будущего: <strong>Train {{ wm.train_bars_count }} баров</strong> → <strong>Out-of-Sample тест {{ wm.oos_bars_count }} баров</strong></div>
         <div>SHA-256 слепок свечей: <code class="mono">{{ report.dataset_manifest.sha256_digest }}</code></div>
       </div>
